@@ -33,24 +33,31 @@ Failed to load extension ".../src/index.ts": Cannot find module
 '@earendil-works/pi-ai/api/openai-completions.lazy'
 ```
 
-Recreate them after any `npm install` in this directory (npm replaces the symlinks with real
-directories, which reintroduces a second module instance):
+Recreate them after any `npm install` in this directory:
 
 ```bash
+PI_HOST=~/.nvm/versions/node/v24.18.0/lib/node_modules/@earendil-works/pi-coding-agent
 mkdir -p node_modules/@earendil-works
-ln -sfn ~/.pi/agent/npm/node_modules/@earendil-works/pi-ai \
-        node_modules/@earendil-works/pi-ai
-ln -sfn ~/.pi/agent/npm/node_modules/@earendil-works/pi-coding-agent \
-        node_modules/@earendil-works/pi-coding-agent
+ln -sfn "$PI_HOST/node_modules/@earendil-works/pi-ai" node_modules/@earendil-works/pi-ai
+ln -sfn "$PI_HOST"                          node_modules/@earendil-works/pi-coding-agent
 ```
 
-Symlinks are used deliberately, not copies: Node resolves them to the host realpath, so the
-extension and Pi share a **single** `pi-ai` instance. A real npm-installed copy — which is
-what upstream's `dependencies` entry produces — creates the duplicate runtime modules the Pi
-warning is about.
+**These must point at Pi's own bundled copy, not at `~/.pi/agent/npm/node_modules/`.** That npm
+tree contains a *second, different* `pi-ai` (0.86.1) left over from when this package was
+installed from npm; the host copy shipped inside `pi-coding-agent` is 1.0.0. Symlinking to the npm
+tree looks correct — the extension loads and live calls succeed — but it puts a second `pi-ai`
+instance, of a second version, in the process. That is precisely the duplicate-runtime-module
+problem the Pi warning is about, just quieter. Verify with `realpath`.
+
+Symlinks rather than copies is the point: Node resolves them to the host realpath, so the
+extension and Pi share a **single** instance of the **same** version.
+
+Because the symlinks point into the Pi installation, the fork has no dependency on
+`~/.pi/agent/npm/` at all, and `pi update --extensions` cannot affect it.
 
 `node_modules/` is gitignored, so the symlinks are local state and do not survive a fresh
-clone on another machine.
+clone on another machine. The `PI_HOST` path embeds a Node version — re-check it after
+upgrading Node or Pi.
 
 ## Verifying
 
@@ -58,6 +65,8 @@ clone on another machine.
 npm install --ignore-scripts   # devDeps for typecheck; wipes symlinks, so relink after
 npm run verify                 # tsc --noEmit + node:test suite + npm pack --dry-run
 rm -f *.tgz
+# relink (see above), then confirm every import lands on the host realpath:
+realpath node_modules/@earendil-works/pi-ai
 ```
 
 Then, with the symlinks restored:
