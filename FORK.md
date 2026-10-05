@@ -33,20 +33,32 @@ Failed to load extension ".../src/index.ts": Cannot find module
 '@earendil-works/pi-ai/api/openai-completions.lazy'
 ```
 
-Recreate them after any `npm install` in this directory:
+Recreate them after any `npm install` in this directory, **and after every `pi update`**
+(see "Managed install" below — each update lands a new release dir, so the old
+symlinks dangle and the extension fails to load with
+`Cannot find module '@earendil-works/pi-ai/api/openai-completions.lazy'`):
 
 ```bash
-PI_HOST=~/.nvm/versions/node/v24.18.0/lib/node_modules/@earendil-works/pi-coding-agent
+PI_AGENT="${XDG_CONFIG_HOME:-$HOME/.config}/pi/agent"; [[ -d $PI_AGENT ]] || PI_AGENT="$HOME/.pi/agent"
+PI_NM="$PI_AGENT/install/releases/$(<"$PI_AGENT/install/current-version")/node_modules/@earendil-works"
 mkdir -p node_modules/@earendil-works
-ln -sfn "$PI_HOST/node_modules/@earendil-works/pi-ai" node_modules/@earendil-works/pi-ai
-ln -sfn "$PI_HOST"                          node_modules/@earendil-works/pi-coding-agent
+ln -sfn "$PI_NM/pi-ai"           node_modules/@earendil-works/pi-ai
+ln -sfn "$PI_NM/pi-coding-agent" node_modules/@earendil-works/pi-coding-agent
+# confirm both resolve into the managed release, not the npm tree
+realpath node_modules/@earendil-works/pi-ai
 ```
+
+Managed installs keep `pi-ai` as a **sibling** of `pi-coding-agent` in the release's
+flat `node_modules/` — it is *not* nested under `pi-coding-agent/node_modules/` as it
+was in the old global npm layout. Point at `$PI_NM/pi-ai`, not
+`$PI_NM/pi-coding-agent/node_modules/@earendil-works/pi-ai`.
 
 **These must point at Pi's own bundled copy, not at `~/.pi/agent/npm/node_modules/`.** That npm
 tree contains a *second, different* `pi-ai` (0.86.1) left over from when this package was
-installed from npm; the host copy shipped inside `pi-coding-agent` is 1.0.0. Symlinking to the npm
-tree looks correct — the extension loads and live calls succeed — but it puts a second `pi-ai`
-instance, of a second version, in the process. That is precisely the duplicate-runtime-module
+installed from npm; the managed release ships `pi-ai` at the same version as Pi itself
+(1.0.3 as of the 1.0.2 → 1.0.3 update). Symlinking to the npm tree looks correct — the
+extension loads and live calls succeed — but it puts a second `pi-ai` instance, of a
+second version, in the process. That is precisely the duplicate-runtime-module
 problem the Pi warning is about, just quieter. Verify with `realpath`.
 
 Symlinks rather than copies is the point: Node resolves them to the host realpath, so the
@@ -56,8 +68,29 @@ Because the symlinks point into the Pi installation, the fork has no dependency 
 `~/.pi/agent/npm/` at all, and `pi update --extensions` cannot affect it.
 
 `node_modules/` is gitignored, so the symlinks are local state and do not survive a fresh
-clone on another machine. The `PI_HOST` path embeds a Node version — re-check it after
-upgrading Node or Pi.
+clone on another machine. The path embeds the Pi release version — re-link after
+upgrading Pi.
+
+## Managed install (migrated from global npm)
+
+Pi was migrated on 2026-10-05 from a global npm install to a **managed** install:
+
+- launcher: `~/.local/bin/pi` → `~/.pi/agent/bin/pi` (a shell shim)
+- `~/.pi/agent/bin/pi` reads `~/.pi/agent/install/current-version` and execs
+  `~/.pi/agent/install/releases/<version>/node_modules/.bin/pi`
+- releases are version-pinned dirs: `releases/1.0.3/node_modules/@earendil-works/…`
+- Pi ships its **own Node** at `~/.local/share/pi-node/current/bin`, prepended to
+  `PATH` by the shim; it is not added to shell profiles
+
+Consequences for this fork:
+
+- The old `PI_HOST=~/.nvm/.../lib/node_modules/@earendil-works/pi-coding-agent` no longer
+  exists, so existing symlinks **dangle** after the migration and after every update.
+- `npm root -g` is now unrelated to Pi. Any script that located Pi through it
+  (e.g. the workbench `scripts/pi-no-diff-highlight.sh`) must read
+  `install/current-version` instead. The old npm prefix still holds a **stale
+  `pi-ai` 0.86.1** — never point at it.
+- `pi update` is self-contained now; the migration's `npm uninstall -g` already ran.
 
 ## Verifying
 
