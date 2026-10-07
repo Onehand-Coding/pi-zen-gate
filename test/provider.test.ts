@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createModels, normalizeContext, Type, type Api, type Context, type FetchFunction, type Model } from "@earendil-works/pi-ai";
 import { freeModels, zenProvider, PROVIDER_ID, sessionHeader, requestHeader, OPENCODE_USER_AGENT, STATIC_ZEN_HEADERS, isEncryptedContentError, stripStaleReasoning } from "../src/provider.ts";
+import { hostModuleDrift, hostRelease, relinkHostModules, releasePaths } from "../src/host-link.ts";
 
 const muse = (p = zenProvider()) => p.getModels().find(m => m.id === "muse-spark-1.3-contributor-free")!;
 /** Build a 0.86 TranscriptContext the way Pi core does before calling a Provider. */
@@ -38,6 +42,87 @@ test("free catalogue uses Pi capabilities and excludes paid models", () => {
   assert.ok(!models.some(m => m.id === "muse-spark-1.3"));
   assert.deepEqual(muse().input, ["text", "image"]);
   assert.equal(muse().thinkingLevelMap?.xhigh, "xhigh");
+});
+
+test("catalogue-gap free models are exposed with Zen identity", () => {
+  const exo = freeModels().find(m => m.id === "exo-free");
+  assert.ok(exo, "exo-free must be offered even though the pi-ai catalogue lacks it");
+  assert.equal(exo.api, "openai-completions");
+  assert.equal(exo.provider, PROVIDER_ID);
+  assert.equal(exo.baseUrl, "https://opencode.ai/zen/v1");
+  assert.deepEqual(exo.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  assert.deepEqual(exo.input, ["text", "image"]);
+  assert.deepEqual(exo.headers, STATIC_ZEN_HEADERS);
+  // Zen's live catalogue must be able to narrow it away again, not resurrect it.
+  assert.equal(freeModels().filter(m => m.id === "exo-free").length, 1);
+});
+
+test("release layout is read from the running entrypoint", () => {
+  const running = "/home/u/.pi/agent/install/releases/1.0.4/node_modules/.bin/pi";
+  assert.equal(hostRelease(running), "1.0.4");
+  assert.equal(hostRelease("/usr/local/bin/pi"), undefined);
+  assert.deepEqual(releasePaths(running), { releasesDir: "/home/u/.pi/agent/install/releases", release: "1.0.4" });
+  // Non-managed installs yield nothing, which is what keeps the side effect inert.
+  assert.equal(releasePaths("/usr/local/bin/pi"), null);
+  assert.equal(releasePaths(undefined), null);
+});
+
+test("relink repoints stale symlinks and refuses to touch real directories", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-opencode-relink-"));
+  const releasesDir = join(root, "releases");
+  const linkDir = join(root, "pkg", "node_modules", "@earendil-works");
+  for (const rel of ["1.0.3", "1.0.4"]) {
+    for (const pkg of ["pi-ai", "pi-coding-agent"]) {
+      mkdirSync(join(releasesDir, rel, "node_modules", "@earendil-works", pkg), { recursive: true });
+    }
+  }
+  mkdirSync(linkDir, { recursive: true });
+  // pi-ai: stale symlink to the previous release. pi-coding-agent: a REAL directory
+  // (what `npm install` leaves), which must survive untouched.
+  symlinkSync(join(releasesDir, "1.0.3", "node_modules", "@earendil-works", "pi-ai"), join(linkDir, "pi-ai"));
+  mkdirSync(join(linkDir, "pi-coding-agent"));
+  const input = { linkDir, releasesDir, release: "1.0.4" };
+
+  const first = relinkHostModules(input);
+  assert.deepEqual(first.relinked, ["pi-ai"]);
+  assert.deepEqual(first.skipped, ["pi-coding-agent"]);
+  assert.equal(realpathSync(join(linkDir, "pi-ai")), join(releasesDir, "1.0.4", "node_modules", "@earendil-works", "pi-ai"));
+  assert.ok(lstatSync(join(linkDir, "pi-coding-agent")).isDirectory(), "a real directory must not be replaced");
+
+  // Idempotent: a second pass finds the symlink already current. The real
+  // directory stays skipped forever — we neither touch it nor vouch for it.
+  const second = relinkHostModules(input);
+  assert.deepEqual(second.relinked, []);
+  assert.deepEqual(second.current, ["pi-ai"]);
+  assert.deepEqual(second.skipped, ["pi-coding-agent"]);
+
+  // A release missing the package is skipped, not symlinked to nothing.
+  rmSync(join(releasesDir, "1.0.4", "node_modules", "@earendil-works", "pi-ai"), { recursive: true });
+  const third = relinkHostModules(input);
+  assert.deepEqual(third.relinked, []);
+  assert.ok(third.skipped.includes("pi-ai"));
+
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("host symlink drift is reported only on divergence", () => {
+  const running = "/home/u/.pi/agent/install/releases/1.0.4/node_modules/.bin/pi";
+  assert.equal(hostRelease(running), "1.0.4");
+  assert.equal(hostRelease("/usr/local/bin/pi"), undefined);
+
+  // Same release -> silent, including a symlink that has not been followed.
+  assert.equal(hostModuleDrift({ piEntry: running, extensionModuleDir: "/home/u/.pi/agent/install/releases/1.0.4/node_modules/@earendil-works/pi-ai" }), null);
+
+  // Stale symlink: Pi keeps old releases on disk, so this resolves and loads a
+  // second pi-ai. Must be reported, with both versions named.
+  const drift = hostModuleDrift({ piEntry: running, extensionModuleDir: "/home/u/.pi/agent/install/releases/1.0.3/node_modules/@earendil-works/pi-ai" });
+  assert.ok(drift, "stale host symlink must be reported");
+  assert.ok(drift!.includes("1.0.4") && drift!.includes("1.0.3"));
+  assert.ok(drift!.includes("FORK.md"), "message must point at the relink instructions");
+
+  // Unknown on either side -> stay quiet rather than warn on a false positive.
+  assert.equal(hostModuleDrift({ piEntry: undefined, extensionModuleDir: "/x/releases/1.0.3/node_modules/@earendil-works/pi-ai" }), null);
+  assert.equal(hostModuleDrift({ piEntry: "/usr/local/bin/pi", extensionModuleDir: "/x/releases/1.0.3/node_modules/@earendil-works/pi-ai" }), null);
 });
 
 test("live refresh intersects known free models and preserves catalogue on failure", async () => {

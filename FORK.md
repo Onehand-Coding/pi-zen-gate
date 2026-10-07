@@ -42,10 +42,14 @@ symlinks dangle and the extension fails to load with
 PI_AGENT="${XDG_CONFIG_HOME:-$HOME/.config}/pi/agent"; [[ -d $PI_AGENT ]] || PI_AGENT="$HOME/.pi/agent"
 PI_NM="$PI_AGENT/install/releases/$(<"$PI_AGENT/install/current-version")/node_modules/@earendil-works"
 mkdir -p node_modules/@earendil-works
-ln -sfn "$PI_NM/pi-ai"           node_modules/@earendil-works/pi-ai
-ln -sfn "$PI_NM/pi-coding-agent" node_modules/@earendil-works/pi-coding-agent
+# Remove first: after `npm install` these are real directories, and `ln -sfn` against a
+# real directory nests the link inside it (…/pi-ai/pi-ai) instead of replacing it.
+rm -rf node_modules/@earendil-works/pi-ai node_modules/@earendil-works/pi-coding-agent
+ln -s "$PI_NM/pi-ai"           node_modules/@earendil-works/pi-ai
+ln -s "$PI_NM/pi-coding-agent" node_modules/@earendil-works/pi-coding-agent
 # confirm both resolve into the managed release, not the npm tree
 realpath node_modules/@earendil-works/pi-ai
+ls -l node_modules/@earendil-works/   # both must be 'l' (symlinks), never 'd' (dirs)
 ```
 
 Managed installs keep `pi-ai` as a **sibling** of `pi-coding-agent` in the release's
@@ -71,6 +75,33 @@ Because the symlinks point into the Pi installation, the fork has no dependency 
 clone on another machine. The path embeds the Pi release version — re-link after
 upgrading Pi.
 
+### Drift is repaired automatically, and reported if it can't be
+
+Relinking is easy to forget and the failure is silent: `pi update` leaves the previous
+release on disk, so a stale symlink keeps *resolving* and simply loads a second copy of
+`pi-ai` into the process. `src/host-link.ts` therefore relinks on **import**, not on
+`session_start`:
+
+- It compares the release Pi is running (`process.argv[1]` → `…/install/releases/<version>/`)
+  against the release each host symlink resolves to, and repoints any that disagree.
+- **Ordering is the whole point.** `index.ts` must keep `import … from "./host-link.ts"`
+  as its *first* import: ESM evaluates imports depth-first in declaration order, so the
+  relink runs before `./provider.ts` resolves `@earendil-works/pi-ai`. Repairing at
+  `session_start` instead would be too late — the stale copy is already in memory, and
+  the fix would only apply to the next process.
+- Only **symlinks** are ever replaced. A real directory is left alone (that is what
+  `npm install` leaves, and deleting one could destroy a legitimate install).
+- Nothing happens outside a managed install: `releasePaths()` returns null for an npm or
+  dev layout, which is what keeps it inert on another machine.
+
+`hostModuleDrift()` is the backstop for the cases relinking cannot handle (read-only
+filesystem, a real directory in the way). On divergence it fires a warning notification
+and a `⚠ pi-ai drift (Pi <version>)` status entry, naming both releases. It returns `null`
+whenever either side is unknown, so it never warns on something it cannot verify.
+
+Verified by pointing both symlinks at the previous release and running `pi` once: the
+process loaded the **running** release and the links were left pointing at it.
+
 ## Managed install (migrated from global npm)
 
 Pi was migrated on 2026-10-05 from a global npm install to a **managed** install:
@@ -78,9 +109,10 @@ Pi was migrated on 2026-10-05 from a global npm install to a **managed** install
 - launcher: `~/.local/bin/pi` → `~/.pi/agent/bin/pi` (a shell shim)
 - `~/.pi/agent/bin/pi` reads `~/.pi/agent/install/current-version` and execs
   `~/.pi/agent/install/releases/<version>/node_modules/.bin/pi`
-- releases are version-pinned dirs: `releases/1.0.3/node_modules/@earendil-works/…`
-- Pi ships its **own Node** at `~/.local/share/pi-node/current/bin`, prepended to
-  `PATH` by the shim; it is not added to shell profiles
+- releases are version-pinned dirs: `releases/1.0.4/node_modules/@earendil-works/…`
+- **Node comes from your normal PATH** (nvm, as of 2026-10-07: `process.execPath` is
+  `~/.nvm/versions/node/v24.18.0/bin/node`). The shim prepends `~/.local/share/pi-node/current/bin`,
+  but that directory does not exist, so the prepend is a no-op and a system/nvm Node is used.
 
 Consequences for this fork:
 
@@ -91,6 +123,42 @@ Consequences for this fork:
   `install/current-version` instead. The old npm prefix still holds a **stale
   `pi-ai` 0.86.1** — never point at it.
 - `pi update` is self-contained now; the migration's `npm uninstall -g` already ran.
+
+## The free-model roster comes from pi-ai, not from Zen
+
+`freeModels()` derives the roster from `getBuiltinModels("opencode")` — the catalogue
+**compiled into pi-ai** (`dist/providers/data/opencode.json`). `refreshModels()` only
+*intersects* that baseline with Zen's live `GET /zen/v1/models`, so it can drop a model
+Zen retired but can never add one Zen introduced.
+
+Consequence: when Zen ships a free model before the next pi-ai release, it is invisible here —
+and neither `pi update` nor `pi update --models` helps, because the catalogue belongs to
+pi-ai (host-provided) rather than to a refreshable cache. A fresh `pi-ai` fixes it on its own;
+check `freeModels()` before adding anything by hand.
+
+Until then, add it to `EXTRA_FREE_MODELS` in `src/provider.ts` and delete the entry once the
+baseline reports it. Take metadata from two sources, which answer different halves:
+
+- **Zen docs model table** (`https://opencode.ai/docs/zen`) — the endpoint and SDK, i.e. the
+  `api` shape. A model sent to the wrong shape fails as a Zen-side **503 "Endpoint is
+  unavailable"**, not a client error, so this is the field that must be right.
+- **models.dev** (`https://models.dev/api.json`, provider `opencode`) — limits, modalities,
+  reasoning efforts.
+
+### Forcing a stale roster to re-derive
+
+Pi persists each provider's refreshed roster in `~/.pi/agent/models-store.json`, and a
+stored entry **shadows** the live `getModels()` result — including after you add a model to
+`EXTRA_FREE_MODELS`. `pi --list-models` keeps showing the old list until the entry is dropped:
+
+```bash
+cp ~/.pi/agent/models-store.json /tmp/models-store.backup.json
+node -e 'const f=process.env.HOME+"/.pi/agent/models-store.json";const j=require("fs");const s=JSON.parse(j.readFileSync(f));delete s["opencode-zen-free"];j.writeFileSync(f,JSON.stringify(s,null,2))'
+pi --list-models | grep zen     # rebuilds from the live provider
+```
+
+Note that `pi update --models` refreshes only Pi's own built-in catalogues; it does **not**
+call this provider's `refreshModels()`.
 
 ## Verifying
 

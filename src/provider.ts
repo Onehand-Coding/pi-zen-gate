@@ -16,9 +16,46 @@ export const PROVIDER_ID = "opencode-zen-free";
 export const BASE_URL = "https://opencode.ai/zen/v1";
 const SUPPORTED_APIS = new Set(["openai-responses", "openai-completions"]);
 
+/**
+ * Free Zen models the bundled pi-ai catalogue does not carry yet.
+ *
+ * The roster is derived from `getBuiltinModels("opencode")`, which is compiled
+ * into pi-ai and only catches up when a new pi-ai ships. `refreshModels()` can
+ * merely *intersect* that baseline with Zen's live `/models` list, so a model Zen
+ * adds before the catalogue syncs stays invisible here — and `pi update --models`
+ * does not help, because the catalogue belongs to pi-ai, not to a refreshable cache.
+ *
+ * Add an entry when Zen ships a free model ahead of the catalogue, and delete it
+ * once `freeModels()` reports it from the baseline. Metadata comes from the Zen
+ * docs model table (endpoint shape + SDK) and models.dev (limits, modalities,
+ * reasoning): the endpoint shape must be the one Zen documents, since a model
+ * sent to the wrong shape fails as a 503 from Zen rather than a client-side error.
+ */
+const EXTRA_FREE_MODELS: Model<Api>[] = [
+  {
+    // Zen docs: https://opencode.ai/zen/v1/chat/completions via @ai-sdk/openai-compatible.
+    id: "exo-free",
+    name: "Exo Free",
+    api: "openai-completions",
+    provider: PROVIDER_ID,
+    baseUrl: BASE_URL,
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
+    contextWindow: 1048576,
+    maxTokens: 131072,
+    // models.dev lists "high" as the only reasoning effort.
+    thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null },
+    inputLimits: { images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } } },
+  },
+];
+
 export function freeModels(): Model<Api>[] {
-  return getBuiltinModels("opencode")
-    .filter((m) => SUPPORTED_APIS.has(m.api) && Object.values(m.cost).every((cost) => cost === 0))
+  const baseline = getBuiltinModels("opencode")
+    .filter((m) => SUPPORTED_APIS.has(m.api) && Object.values(m.cost).every((cost) => cost === 0));
+  const known = new Set(baseline.map((m) => m.id));
+  return [...baseline, ...EXTRA_FREE_MODELS.filter((m) => !known.has(m.id))]
     .map((m) => ({
       ...m,
       provider: PROVIDER_ID,
