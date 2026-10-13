@@ -74,7 +74,7 @@ export function freeModels(): Model<Api>[] {
     }));
 }
 
-export const OPENCODE_USER_AGENT = "opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14 pi-opencode-direct/0.1.7";
+export const OPENCODE_USER_AGENT = "opencode/1.18.35 ai-sdk/provider-utils/4.0.45 runtime/bun/1.3.14";
 export const OPENCODE_CLIENT = "cli";
 export const OPENCODE_PROJECT = "global";
 
@@ -105,12 +105,43 @@ function base62FromBytes(bytes: Uint8Array, length: number): string {
  * (6 timestamp bytes) + 14 random base62 chars. The upstream free-tier gate
  * rejects structurally invalid ids (e.g. 64-char sha256 hex or 24-char
  * base62 without a hex prefix), while freshly generated valid ids pass.
- * Hashing keeps affinity stable per Pi session and distinct between sessions.
+ *
+ * The 12 hex chars are not arbitrary: OpenCode encodes a real timestamp,
+ * `BigInt(Date.now()) * 0x1000n + counter`, bitwise-inverted for session ids
+ * (packages/schema/src/identifier.ts). The gate decodes them and rejects
+ * sessions that are not recent — a sha256-derived id decodes to an arbitrary
+ * date (ours read 1971-10-24) and 403s FreeTierError on every request.
+ * Verified live 2026-10-13 against /zen/v1: same body and headers, sha256 id
+ * 403, timestamp-encoded id 200.
+ *
+ * Affinity stays stable per Pi session: the timestamp is taken from the first
+ * call for that Pi session and reused, so one Pi session keeps one OpenCode
+ * session (which is what makes `reasoning.encrypted_content` replayable).
  */
+const SESSION_STAMP_MS = new Map<string, { hex: string; createdAt: number }>();
+const SESSION_ID_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Encode a timestamp as OpenCode does: 6 bytes of `value`, hex, ascending or inverted. */
+function timestampHex(timestamp: number, descending: boolean): string {
+  let value = BigInt(timestamp) * 0x1000n;
+  if (descending) value = ~value;
+  let out = "";
+  for (let i = 0; i < 6; i++) {
+    out += Number((value >> BigInt(40 - 8 * i)) & 0xffn).toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
 export function sessionHeader(sessionId: string): string {
+  const now = Date.now();
+  const cached = SESSION_STAMP_MS.get(sessionId);
+  const stamp =
+    cached && now - cached.createdAt < SESSION_ID_MAX_AGE_MS
+      ? cached
+      : { hex: timestampHex(now, true), createdAt: now };
+  SESSION_STAMP_MS.set(sessionId, stamp);
   const hash = createHash("sha256").update(`${PROVIDER_ID}:${sessionId}`).digest();
-  const hex = hash.subarray(0, 6).toString("hex");
-  return `ses_${hex}${base62FromBytes(hash.subarray(6), 14)}`;
+  return `ses_${stamp.hex}${base62FromBytes(hash.subarray(6), 14)}`;
 }
 
 /** Random valid OpenCode request id (`msg_` + 12 hex + 14 base62). Not validated, but matches the real CLI. */
