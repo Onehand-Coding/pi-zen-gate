@@ -56,7 +56,15 @@ for typecheck/tests.
 Upstream has no equivalent of `src/host-link.ts`, so every `pi update` requires manual
 relinking.
 
-## Required: host symlinks
+## Host symlinks
+
+**Only needed for a local-path checkout.** Verified 2026-10-13: a fresh
+`pi install git:github.com/Onehand-Coding/pi-zen-gate` creates no
+`node_modules` at all and still works, because Pi's host-module mapping resolves
+the deep `pi-ai` subpaths for packages it installs itself. The gap below is
+specific to a package referenced by **absolute path** in `packages`, which is how
+the maintainer runs it. If you are installing from git or npm, skip this section
+entirely.
 
 `src/provider.ts` imports deep subpaths (`@earendil-works/pi-ai/api/openai-completions.lazy`,
 `.../api/openai-responses.lazy`, `.../providers/all`). Pi's host-module mapping does **not**

@@ -249,6 +249,11 @@ the paid catalogue.
   **not** a gate factor. It looks damning and is not.
 
 ### Host symlinks
+- These are only required for a **local-path checkout**, not for `pi install
+  git:...` or `npm:`. Verified: a fresh git install creates no `node_modules`
+  and works, because Pi's host-module mapping resolves the deep `pi-ai`
+  subpaths for packages Pi installs itself. The gap is specific to an absolute
+  path in `packages`.
 - `npm install` in this directory replaces the symlinks with real directories,
   and every `pi update` makes them dangle. Both break the extension with a
   misleading `Cannot find module '@earendil-works/pi-ai/api/...'`.
