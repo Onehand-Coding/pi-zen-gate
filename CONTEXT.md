@@ -194,9 +194,12 @@ gate is server-side and enforced on the wire. What it requires, as measured:
 
 - **`x-opencode-session` must encode a recent timestamp.** The 12 hex characters
   are not random: OpenCode encodes `BigInt(Date.now()) * 0x1000n + counter`,
-  bitwise-inverted for session ids (`packages/schema/src/identifier.ts`). The
-  gate decodes them. A sha256-derived id decodes to an arbitrary date (the
-  previous implementation decoded to 1971-10-24) and is rejected.
+  bitwise-inverted for session ids. That scheme lives upstream in
+  `packages/schema/src/identifier.ts` (branch `dev`); the authoritative
+  transcription to compare against is there, not in a third-party implementation.
+  The gate decodes those bytes and rejects sessions that are not recent. A
+  sha256-derived id decodes to an arbitrary date (the previous implementation
+  decoded to 1971-10-24) and is rejected.
 - **The User-Agent must not carry a non-official token.** A suffix identifying
   this package (`pi-opencode-direct/0.1.7`) turns a passing request into a 403.
   The version number itself is not checked; the identity claim is.

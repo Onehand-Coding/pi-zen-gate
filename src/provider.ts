@@ -106,25 +106,44 @@ function base62FromBytes(bytes: Uint8Array, length: number): string {
  * rejects structurally invalid ids (e.g. 64-char sha256 hex or 24-char
  * base62 without a hex prefix), while freshly generated valid ids pass.
  *
- * The 12 hex chars are not arbitrary: OpenCode encodes a real timestamp,
- * `BigInt(Date.now()) * 0x1000n + counter`, bitwise-inverted for session ids
- * (packages/schema/src/identifier.ts). The gate decodes them and rejects
- * sessions that are not recent — a sha256-derived id decodes to an arbitrary
- * date (ours read 1971-10-24) and 403s FreeTierError on every request.
- * Verified live 2026-10-13 against /zen/v1: same body and headers, sha256 id
- * 403, timestamp-encoded id 200.
+ * The 12 hex chars are not arbitrary: OpenCode encodes a real timestamp there.
+ * `timestampHex()` is a transcription of upstream's id scheme in
+ * `packages/schema/src/identifier.ts` (branch `dev`), which is the authority
+ * for this format. The gate decodes those bytes and rejects sessions that are
+ * not recent — a sha256-derived id decodes to an arbitrary date (the previous
+ * implementation here decoded to 1971-10-24) and 403s FreeTierError on every
+ * request. Verified live 2026-10-13 against /zen/v1: same body and headers,
+ * sha256 id 403, timestamp-encoded id 200.
  *
- * Affinity stays stable per Pi session: the timestamp is taken from the first
- * call for that Pi session and reused, so one Pi session keeps one OpenCode
- * session (which is what makes `reasoning.encrypted_content` replayable).
+ * Affinity stays stable per Pi session: the encoded value is taken from the
+ * first call for that Pi session and reused, so one Pi session keeps one
+ * OpenCode session (which is what makes `reasoning.encrypted_content`
+ * replayable).
  */
 const SESSION_STAMP_MS = new Map<string, { hex: string; createdAt: number }>();
 const SESSION_ID_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** Encode a timestamp as OpenCode does: 6 bytes of `value`, hex, ascending or inverted. */
-function timestampHex(timestamp: number, descending: boolean): string {
-  let value = BigInt(timestamp) * 0x1000n;
-  if (descending) value = ~value;
+/** Upstream's per-millisecond id counter, so ids minted in the same millisecond differ. */
+let lastIdTimestampMs = 0;
+let idCounter = 0;
+
+function nextIdCounter(timestamp: number): number {
+  if (timestamp !== lastIdTimestampMs) {
+    lastIdTimestampMs = timestamp;
+    idCounter = 0;
+  }
+  idCounter += 1;
+  return idCounter;
+}
+
+/**
+ * Encode a timestamp the way upstream does (`packages/schema/src/identifier.ts`):
+ * `BigInt(timestamp) * 0x1000n + counter`, bitwise-inverted when `descending`,
+ * written as 6 big-endian bytes of hex. Session ids descend, message ids ascend.
+ */
+function timestampHex(timestamp: number, descending: boolean, counter: number): string {
+  const current = BigInt(timestamp) * 0x1000n + BigInt(counter);
+  const value = descending ? ~current : current;
   let out = "";
   for (let i = 0; i < 6; i++) {
     out += Number((value >> BigInt(40 - 8 * i)) & 0xffn).toString(16).padStart(2, "0");
@@ -138,15 +157,23 @@ export function sessionHeader(sessionId: string): string {
   const stamp =
     cached && now - cached.createdAt < SESSION_ID_MAX_AGE_MS
       ? cached
-      : { hex: timestampHex(now, true), createdAt: now };
+      : { hex: timestampHex(now, true, nextIdCounter(now)), createdAt: now };
   SESSION_STAMP_MS.set(sessionId, stamp);
   const hash = createHash("sha256").update(`${PROVIDER_ID}:${sessionId}`).digest();
   return `ses_${stamp.hex}${base62FromBytes(hash.subarray(6), 14)}`;
 }
 
-/** Random valid OpenCode request id (`msg_` + 12 hex + 14 base62). Not validated, but matches the real CLI. */
+/**
+ * OpenCode request id: `msg_` + the same timestamp encoding, ascending (message
+ * ids are ascending upstream, session ids descending) + 14 random base62 chars.
+ * Upstream reuses the user message's id here; a fresh one per request is
+ * structurally identical. Not gate-checked: verified live 2026-10-13 that a
+ * random-hex request id alongside a valid session id still returns 200. Kept
+ * faithful anyway so the two generators cannot drift apart.
+ */
 export function requestHeader(): string {
-  return `msg_${randomBytes(6).toString("hex")}${base62FromBytes(randomBytes(14), 14)}`;
+  const now = Date.now();
+  return `msg_${timestampHex(now, false, nextIdCounter(now))}${base62FromBytes(randomBytes(14), 14)}`;
 }
 
 /**

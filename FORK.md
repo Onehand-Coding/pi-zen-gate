@@ -18,11 +18,15 @@ live on 2026-10-13 against `/zen/v1`:
 
 - **Session ids must encode a recent timestamp.** The 12 hex characters of `ses_...` are not
   random: OpenCode encodes `BigInt(Date.now()) * 0x1000n + counter`, bitwise-inverted for
-  session ids (`packages/schema/src/identifier.ts`). The gate decodes them and rejects sessions
-  that are not recent. Upstream derives those characters from a sha256 hash, so they decode to an
-  arbitrary date — ours read 1971-10-24 — and every request 403s `FreeTierError`.
-  Fixed here by `timestampHex()` in `src/provider.ts`, cached per Pi session with a 24h max age
-  so affinity and `reasoning.encrypted_content` replay still work.
+  session ids. The gate decodes them and rejects sessions that are not recent. Upstream derives
+  those characters from a sha256 hash, so they decode to an arbitrary date — ours read
+  1971-10-24 — and every request 403s `FreeTierError`.
+  Fixed here by `timestampHex()` in `src/provider.ts`, which transcribes the id scheme in
+  [`packages/schema/src/identifier.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/schema/src/identifier.ts)
+  (branch `dev`) — the upstream source of truth for the format. The encoding there is
+  `BigInt(timestamp) * 0x1000n + counter`, inverted when descending, emitted as 6 big-endian
+  bytes of hex followed by 14 random base62 chars. The value is cached per Pi session with a 24h
+  max age so affinity and `reasoning.encrypted_content` replay still work.
 - **The User-Agent must not identify itself.** Upstream sends
   `... pi-opencode-direct/0.1.7`. That token alone turns a passing request into a 403. The
   version number is not what matters; the identity claim is.
