@@ -290,6 +290,16 @@ the paid catalogue.
 - Local divergence from upstream: the peer-dependency fix, `src/host-link.ts`
   and its import-time repair, the timestamp-encoded session id, and the
   non-self-identifying User-Agent.
+- **Publication to npm is prepared but not done** (paused 2026-10-13). The
+  release is `0.2.0`, committed and pushed, with `prepublishOnly` green. The
+  tarball was built and proven: it contains exactly the 7 intended files, and
+  installing that tarball into a scratch project made a successful live
+  free-tier call. The only thing left is `npm login` followed by
+  `npm publish --access public`, which was not run because npm is not
+  authenticated on this machine and login is an interactive browser flow.
+  `pi-zen-gate` was confirmed available on the registry at that point, but
+  availability is not reserved until publication, so re-check before publishing.
+  Once published, verify from a clean machine with `pi install npm:pi-zen-gate`.
 - `OPENCODE_VERSION`-style freshness is not automated here. The User-Agent is a
   constant. If the gate ever starts checking the version, that constant is where
   it gets fixed.
