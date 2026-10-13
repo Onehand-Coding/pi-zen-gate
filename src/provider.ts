@@ -415,7 +415,7 @@ export function patchCompatDirectTransport(getSessionId: SessionGetter = () => u
         debugLog(`${identitySummary(new Headers(processed.headers as HeadersInit | undefined), "compat")} ${shapeSummary(ctx, options)}`);
         return origStreamSimple(model as never, ctx as never, processed as never);
       }) as never,
-    }, "pi-opencode-direct");
+    }, "pi-zen-gate");
   }
 }
 
@@ -438,7 +438,7 @@ const ZEN_SESSION_PATTERN = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 function debugLog(message: string): void {
   try {
     if (typeof process !== "undefined" && process.env?.PI_OPENCODE_DIRECT_DEBUG === "1") {
-      console.error(`[pi-opencode-direct] ${message}`);
+      console.error(`[pi-zen-gate] ${message}`);
     }
   } catch {
     // Logging must never break requests.
@@ -768,7 +768,7 @@ export function zenProvider(getSessionId: () => string | undefined = () => undef
       const signal = ctx.signal;
       const response = await fetch(`${BASE_URL}/models`, {
         signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
-        headers: { "User-Agent": "pi-opencode-direct/0.1.7" },
+        headers: { "User-Agent": OPENCODE_USER_AGENT },
       });
       if (!response.ok) throw new Error(`Zen model catalogue: HTTP ${response.status}`);
       const body = await response.json() as { data?: { id?: unknown }[] };

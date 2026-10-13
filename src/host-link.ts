@@ -100,7 +100,7 @@ export function hostModuleDrift(input: {
   const running = hostRelease(input.piEntry);
   const resolved = hostRelease(input.extensionModuleDir);
   if (!running || !resolved || running === resolved) return null;
-  return `pi-opencode-direct: host symlink drift — Pi runs release ${running}, but this extension `
+  return `pi-zen-gate: host symlink drift — Pi runs release ${running}, but this extension `
     + `resolves pi-ai from ${resolved}. Two copies of pi-ai are now in this process. Re-run the `
     + `host-symlink block in the fork's FORK.md (rm -rf the two @earendil-works entries, then ln -s).`;
 }

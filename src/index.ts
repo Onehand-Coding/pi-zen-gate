@@ -26,7 +26,7 @@ export default function (pi: ExtensionAPI) {
     if (!drift) return;
     if (!ctx.hasUI) return;
     ctx.ui.notify(drift, "warning");
-    ctx.ui.setStatus("pi-opencode-direct", `⚠ pi-ai drift (Pi ${hostRelease(process.argv[1])})`);
+    ctx.ui.setStatus("pi-zen-gate", `⚠ pi-ai drift (Pi ${hostRelease(process.argv[1])})`);
   });
   pi.on("before_agent_start", remember);
   const getSessionId = () => context?.sessionManager.getSessionId();
