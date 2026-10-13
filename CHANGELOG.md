@@ -1,6 +1,56 @@
 # Changelog
 
+## 0.2.0
+
+First release under this fork's own identity (`pi-zen-gate`), diverged from
+`pi-opencode-direct` 0.1.7. The version no longer tracks upstream's, because the
+code no longer matches it.
+
+### The Zen free-tier gate now passes
+
+- **`x-opencode-session` encodes a real timestamp.** The 12 hex characters were
+  derived from a sha256 hash, so they decoded to an arbitrary date (1971-10-24 on
+  this machine) and every request 403'd `FreeTierError`. `timestampHex()` now
+  implements the scheme from `packages/schema/src/identifier.ts`:
+  `BigInt(timestamp) * 0x1000n + counter`, bitwise-inverted for session ids,
+  emitted as 6 big-endian bytes of hex. The value is cached per Pi session with a
+  24h max age, so affinity and `reasoning.encrypted_content` replay still work.
+- **The User-Agent no longer identifies the package.** It ended in
+  `pi-opencode-direct/0.1.7`; that token alone turned a passing request into a
+  403. The version number was never the issue, the identity claim was.
+- `requestHeader()` uses the same encoding, ascending as upstream does for
+  message ids.
+- The `/zen/v1/models` catalogue fetch was still sending the old self-identifying
+  User-Agent. That endpoint is not gated so it was passing by luck; it now shares
+  `OPENCODE_USER_AGENT` with every other Zen request.
+
+### Host-module repair survives `pi update`
+
+- `src/host-link.ts` repoints the host symlinks at the release Pi is actually
+  running, at **import** time. ESM evaluates imports in declaration order, so
+  `index.ts` must keep it as its first import; repairing at `session_start` would
+  be too late, because the stale `pi-ai` is already in memory.
+- `hostModuleDrift()` is the backstop for cases relinking cannot handle, and
+  returns null rather than warning on something it cannot verify.
+
+### Peer-only host dependencies
+
+- `@earendil-works/pi-ai` and `pi-coding-agent` are declared peer-only with `"*"`.
+  Upstream had `pi-ai` in both `dependencies` and `peerDependencies`, which makes
+  Pi warn on every startup. Reported as
+  [issue #3](https://github.com/Aymendje/pi-opencode-direct/issues/3), unanswered.
+
+### Notes for upgraders from `pi-opencode-direct`
+
+- The Pi provider id is still `opencode-zen-free`, so existing `models-store.json`
+  rosters and `/model` selections keep working.
+- Host symlinks are only needed for a local-path checkout. Installing from git or
+  npm needs no manual steps.
+
 ## 0.1.7
+
+Upstream release. Retained for history; see
+`Aymendje/pi-opencode-direct`.
 
 - Pi 0.86.1 compatibility: adapt to the `TranscriptContext` Custom Streaming API. All `stream`/`streamSimple` paths (provider wrapper and compat side-channel patch) normalize legacy `Context` (`systemPrompt`/`tools`) to transcripts via `normalizeContext`, so direct calls keep working while Pi core sends transcripts. `swapCompactionPrompt` handles both shapes — legacy `systemPrompt` and transcript system messages read via `getCurrentSystemPrompt` (tools checked via `getCurrentTools`) — still limited to short standalone summarization prompts, user message and format untouched, keyed requests never rewritten. Debug shape summaries count transcript-declared tools.
 - Pin `@earendil-works/pi-ai` to `0.86.1` in dependencies and devDependencies; tests build transcript contexts the way Pi core does.

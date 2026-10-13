@@ -5,9 +5,12 @@ installation, login, API key, server, container, or LiteLLM is required.
 
 > **This is a fork of [`Aymendje/pi-opencode-direct`](https://github.com/Aymendje/pi-opencode-direct)**
 > (MIT), maintained here because upstream's latest release no longer passes the Zen
-> free-tier gate. `CONTEXT.md` records the durable project knowledge and `FORK.md`
-> the fork-specific details. Upstream remains the origin and is credited as such;
-> see `FORK.md` for exactly what diverges.
+> free-tier gate. Upstream remains the origin and is credited as such; see
+> [FORK.md](https://github.com/Onehand-Coding/pi-zen-gate/blob/main/FORK.md) for
+> exactly what diverges and
+> [CONTEXT.md](https://github.com/Onehand-Coding/pi-zen-gate/blob/main/CONTEXT.md)
+> for the durable project knowledge. Neither file ships in the tarball, so they
+> are linked from the repository rather than bundled.
 
 ## Install
 
