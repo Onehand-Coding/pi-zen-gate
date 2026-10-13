@@ -2,7 +2,7 @@
 
 ## First release
 
-The package name is `pi-opencode-direct`. It was not listed on npm when checked
+The package name is `pi-zen-gate`. It was not listed on npm when checked
 on 2026-09-10; availability is not reserved until publication.
 
 Repository, homepage, and issue links point to
@@ -43,7 +43,7 @@ npm publish --access public
 it does not publish. After publication, verify a clean Pi installation with:
 
 ```sh
-pi install npm:pi-opencode-direct
+pi install npm:pi-zen-gate
 ```
 
 Select **OpenCode Zen Free** in `/model`. Allow time for the Pi gallery to index

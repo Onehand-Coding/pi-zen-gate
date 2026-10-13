@@ -1,4 +1,4 @@
-# pi-opencode-direct
+# pi-zen-gate
 
 Free OpenCode Zen models in Pi through native HTTP requests. No OpenCode
 installation, login, API key, server, container, or LiteLLM is required.
@@ -14,7 +14,7 @@ installation, login, API key, server, container, or LiteLLM is required.
 Requires Pi 0.85.1 or newer (tested with 0.85.1) and Node 22.19 or newer.
 
 ```sh
-pi install npm:pi-opencode-direct
+pi install npm:pi-zen-gate
 ```
 
 For development, run `npm ci --ignore-scripts` followed by `pi install .`
@@ -107,7 +107,7 @@ child with an absolute file path:
 
 ```json
 {
-  "childExtensionPaths": ["/path/to/pi-opencode-direct/src/index.ts"]
+  "childExtensionPaths": ["/path/to/pi-zen-gate/src/index.ts"]
 }
 ```
 

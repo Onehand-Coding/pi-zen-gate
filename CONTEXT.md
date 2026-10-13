@@ -1,4 +1,4 @@
-# pi-opencode-direct
+# pi-zen-gate
 
 > Persistent project memory — durable knowledge only.
 >
@@ -172,11 +172,20 @@ genuinely useful, never revert a local fix to match it.
 **Alternatives Considered:** Reinstalling upstream, which was verified to still
 carry both gate defects and to lose the host-symlink repair.
 
-### Publish under a new npm name
-**Choice:** Publish to npm under a name other than `pi-opencode-direct`.
-**Status:** Experimental (name not yet chosen)
-**Reason:** The upstream name is taken on npm, and publishing under it would
-imply maintaining someone else's package identity.
+### Rename to `pi-zen-gate`
+**Choice:** The package, the repository, and the local checkout are all named `pi-zen-gate`.
+**Status:** Current (2026-10-13)
+**Reason:** Upstream owns `pi-opencode-direct` on npm and still publishes to it. A
+fork that diverges on the gate must not sit under the upstream name, which would
+imply maintaining someone else's package identity. The new name describes what the
+package actually does. All four identifiers were renamed together: npm package,
+GitHub repo, local directory, and the docs.
+
+**Deliberately NOT renamed:** the Pi provider id `opencode-zen-free`
+(`PROVIDER_ID`). It is what Pi shows in `/model` and the key it stores the
+refreshed roster under in `~/.pi/agent/models-store.json`. Changing it would
+orphan that cached roster for no gain, and the provider id and the distribution
+name are different namespaces.
 
 ### Repair host symlinks on import, not on session start
 **Choice:** `host-link.ts` relinks at module import.

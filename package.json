@@ -1,5 +1,5 @@
 {
-  "name": "pi-opencode-direct",
+  "name": "pi-zen-gate",
   "version": "0.1.7",
   "description": "Keyless OpenCode Zen free models for Pi, using native HTTP APIs",
   "type": "module",
@@ -49,10 +49,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Onehand-Coding/pi-opencode-direct.git"
+    "url": "git+https://github.com/Onehand-Coding/pi-zen-gate.git"
   },
-  "homepage": "https://github.com/Onehand-Coding/pi-opencode-direct#readme",
+  "homepage": "https://github.com/Onehand-Coding/pi-zen-gate#readme",
   "bugs": {
-    "url": "https://github.com/Onehand-Coding/pi-opencode-direct/issues"
+    "url": "https://github.com/Onehand-Coding/pi-zen-gate/issues"
   }
 }
