@@ -1,10 +1,37 @@
-# Local fork notes
+# Fork notes
 
-Personal fork of [`Aymendje/pi-opencode-direct`](https://github.com/Aymendje/pi-opencode-direct),
-pinned to upstream **0.1.7** (commit `8c359b8`). Upstream publishes no git tags, so the base
-is pinned locally as `v0.1.7-pinned`. Remote `upstream` = the original repo.
+Fork of [`Aymendje/pi-opencode-direct`](https://github.com/Aymendje/pi-opencode-direct),
+base pinned to upstream **0.1.7** (commit `8c359b8`). Upstream publishes no git tags, so the base
+is pinned locally as `v0.1.7-pinned`. Remote `upstream` is the original repo, kept **fetch-only**.
+
+Upstream is a reference, not a base: fetch it and cherry-pick anything genuinely useful, but never
+revert a local fix to match it.
 
 ## Why this fork exists
+
+Three reasons, in order of how much they matter.
+
+### 1. The Zen free-tier gate (the real one)
+
+Upstream 0.1.7 no longer passes the anonymous gate. Two independent defects, both verified
+live on 2026-10-13 against `/zen/v1`:
+
+- **Session ids must encode a recent timestamp.** The 12 hex characters of `ses_...` are not
+  random: OpenCode encodes `BigInt(Date.now()) * 0x1000n + counter`, bitwise-inverted for
+  session ids (`packages/schema/src/identifier.ts`). The gate decodes them and rejects sessions
+  that are not recent. Upstream derives those characters from a sha256 hash, so they decode to an
+  arbitrary date — ours read 1971-10-24 — and every request 403s `FreeTierError`.
+  Fixed here by `timestampHex()` in `src/provider.ts`, cached per Pi session with a 24h max age
+  so affinity and `reasoning.encrypted_content` replay still work.
+- **The User-Agent must not identify itself.** Upstream sends
+  `... pi-opencode-direct/0.1.7`. That token alone turns a passing request into a 403. The
+  version number is not what matters; the identity claim is.
+
+Both produce the same `403 FreeTierError` as auth, quota, and network failures, which is why
+this went unnoticed for a while. `CONTEXT.md` §9 records what the gate does and does not
+require, including the parts that look relevant and are not.
+
+### 2. Peer-only host dependencies
 
 Upstream declares `@earendil-works/pi-ai` in **both** `dependencies` (pinned `0.86.1`) and
 `peerDependencies` (`"*"`). Pi treats `pi-ai`, `pi-agent-core`, `pi-coding-agent`, `pi-tui`,
@@ -19,6 +46,11 @@ was deliberate, not an oversight.
 
 The commit here sets `dependencies` to `{}` and keeps the `0.86.1` pin in `devDependencies`
 for typecheck/tests.
+
+### 3. Host symlinks survive Pi updates (see below)
+
+Upstream has no equivalent of `src/host-link.ts`, so every `pi update` requires manual
+relinking.
 
 ## Required: host symlinks
 

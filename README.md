@@ -3,6 +3,12 @@
 Free OpenCode Zen models in Pi through native HTTP requests. No OpenCode
 installation, login, API key, server, container, or LiteLLM is required.
 
+> **This is a fork of [`Aymendje/pi-opencode-direct`](https://github.com/Aymendje/pi-opencode-direct)**
+> (MIT), maintained here because upstream's latest release no longer passes the Zen
+> free-tier gate. `CONTEXT.md` records the durable project knowledge and `FORK.md`
+> the fork-specific details. Upstream remains the origin and is credited as such;
+> see `FORK.md` for exactly what diverges.
+
 ## Install
 
 Requires Pi 0.85.1 or newer (tested with 0.85.1) and Node 22.19 or newer.

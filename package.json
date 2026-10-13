@@ -49,10 +49,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Aymendje/pi-opencode-direct.git"
+    "url": "git+https://github.com/Onehand-Coding/pi-opencode-direct.git"
   },
-  "homepage": "https://github.com/Aymendje/pi-opencode-direct#readme",
+  "homepage": "https://github.com/Onehand-Coding/pi-opencode-direct#readme",
   "bugs": {
-    "url": "https://github.com/Aymendje/pi-opencode-direct/issues"
+    "url": "https://github.com/Onehand-Coding/pi-opencode-direct/issues"
   }
 }
