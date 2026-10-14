@@ -17,12 +17,12 @@ installation, login, API key, server, container, or LiteLLM is required.
 Requires Pi 0.85.1 or newer (tested with 0.85.1) and Node 22.19 or newer.
 
 ```sh
-pi install npm:pi-zen-gate
+pi install git:github.com/Onehand-Coding/pi-zen-gate
 ```
 
 For development, run `npm ci --ignore-scripts` followed by `pi install .`
-from a checkout of this repository. Install through npm or Pi so that peer
-packages needed by the native transport imports are available.
+from a checkout of this repository. The dev dependencies needed by the native
+transport imports must be resolvable when running from a checkout.
 
 Restart Pi or use `/reload`, then select **OpenCode Zen Free** in `/model`.
 
@@ -134,7 +134,7 @@ native tool-call/result round trip; and a Pi CLI session that used `read` on a
 PNG and correctly described it while OpenCode was absent from `PATH`.
 
 `npm run verify` runs type checking, fixture tests, and an npm package dry run.
-CI runs these checks on Node 22, 24, and 26. See [PUBLISHING.md](PUBLISHING.md)
+CI runs these checks on Node 22, 24, and 26. See [FORK.md](FORK.md)
 for release steps and [CHANGELOG.md](CHANGELOG.md) for changes.
 
 ## License

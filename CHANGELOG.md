@@ -2,9 +2,9 @@
 
 ## 0.2.0
 
-First release under this fork's own identity (`pi-zen-gate`), diverged from
-`pi-opencode-direct` 0.1.7. The version no longer tracks upstream's, because the
-code no longer matches it.
+Diverged from `pi-opencode-direct` 0.1.7 under this fork's own identity
+(`pi-zen-gate`). The version no longer tracks upstream's, because the code no
+longer matches it.
 
 ### The Zen free-tier gate now passes
 

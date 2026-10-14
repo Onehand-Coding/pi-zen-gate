@@ -22,15 +22,11 @@ OpenCode client on the wire, because the anonymous free tier is gated on that.
 
 **Target Users:**
 - The maintainer, installing it into their own Pi (local path install)
-- Pi and OMP users who install the published package
 
 **Current Milestone:** Maintenance, diverging from upstream.
 
 **Current Development Focus:** Keeping the Zen free-tier fingerprint current,
 since the gate is enforced server-side and can change without notice.
-
-**Longer-Term Direction:** Publish to npm under a new package name so other Pi
-users can install a version that actually passes the gate.
 
 ---
 
@@ -175,17 +171,28 @@ carry both gate defects and to lose the host-symlink repair.
 ### Rename to `pi-zen-gate`
 **Choice:** The package, the repository, and the local checkout are all named `pi-zen-gate`.
 **Status:** Current (2026-10-13)
-**Reason:** Upstream owns `pi-opencode-direct` on npm and still publishes to it. A
-fork that diverges on the gate must not sit under the upstream name, which would
-imply maintaining someone else's package identity. The new name describes what the
-package actually does. All four identifiers were renamed together: npm package,
-GitHub repo, local directory, and the docs.
+**Reason:** Upstream still owns `pi-opencode-direct` and ships under it. A fork that
+diverges on the gate must not carry that name, because it would imply maintaining
+someone else's identity. The new name describes what the package actually does. All
+four identifiers were renamed together: package manifest, GitHub repo, local
+directory, and the docs.
 
 **Deliberately NOT renamed:** the Pi provider id `opencode-zen-free`
 (`PROVIDER_ID`). It is what Pi shows in `/model` and the key it stores the
 refreshed roster under in `~/.pi/agent/models-store.json`. Changing it would
-orphan that cached roster for no gain, and the provider id and the distribution
-name are different namespaces.
+orphan that cached roster for no gain, and the provider id and the package name
+are different namespaces.
+
+### Distribution stays local and git-only
+**Choice:** No package registry. Installation is a local path entry in `packages`, or
+`pi install git:github.com/Onehand-Coding/pi-zen-gate` on any other machine.
+**Status:** Current (2026-10-13, deliberate)
+**Reason:** The gate is enforced by a third party and can tighten without notice, so a
+public artifact under this name would inherit a support obligation nobody asked for.
+A registry account also adds 2FA setup and a permanent name claim, and buys nothing
+here: the git install was verified to work with no manual steps, which is the whole
+convenience a registry would provide. The GitHub repository is already public, so
+attribution and visibility do not require a registry.
 
 ### Repair host symlinks on import, not on session start
 **Choice:** `host-link.ts` relinks at module import.
@@ -290,16 +297,12 @@ the paid catalogue.
 - Local divergence from upstream: the peer-dependency fix, `src/host-link.ts`
   and its import-time repair, the timestamp-encoded session id, and the
   non-self-identifying User-Agent.
-- **Publication to npm is prepared but not done** (paused 2026-10-13). The
-  release is `0.2.0`, committed and pushed, with `prepublishOnly` green. The
-  tarball was built and proven: it contains exactly the 7 intended files, and
-  installing that tarball into a scratch project made a successful live
-  free-tier call. The only thing left is `npm login` followed by
-  `npm publish --access public`, which was not run because npm is not
-  authenticated on this machine and login is an interactive browser flow.
-  `pi-zen-gate` was confirmed available on the registry at that point, but
-  availability is not reserved until publication, so re-check before publishing.
-  Once published, verify from a clean machine with `pi install npm:pi-zen-gate`.
+- **Install routes, both verified working.** The maintainer's Pi loads this
+  checkout by absolute path in `packages`. Any other machine installs with
+  `pi install git:github.com/Onehand-Coding/pi-zen-gate`, which needs no manual
+  steps: Pi creates no `node_modules` for it and resolves the deep `pi-ai`
+  subpaths itself. Both were confirmed by a live free-tier call, once from a
+  clean git clone and once from a packed tarball.
 - `OPENCODE_VERSION`-style freshness is not automated here. The User-Agent is a
   constant. If the gate ever starts checking the version, that constant is where
   it gets fixed.
