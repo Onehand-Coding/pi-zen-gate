@@ -1,6 +1,6 @@
 {
   "name": "pi-zen-gate",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Keyless OpenCode Zen free models for Pi, using native HTTP APIs",
   "type": "module",
   "license": "MIT",

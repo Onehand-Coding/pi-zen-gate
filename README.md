@@ -27,13 +27,13 @@ transport imports must be resolvable when running from a checkout.
 Restart Pi or use `/reload`, then select **OpenCode Zen Free** in `/model`.
 
 ```sh
-pi --provider opencode-zen-free --model muse-spark-1.3-contributor-free --thinking xhigh
+pi --provider opencode-zen-free --model big-pickle
 ```
 
-Muse Spark supports native images, reasoning, and tool calls. Pi's thinking
-selector exposes `minimal`, `low`, `medium`, `high`, and `xhigh`. An explicit Pi
-thinking setting wins; requests without one default to `xhigh` for Muse Spark.
-The provider also registers the other known free models supported by Pi's
+Big Pickle supports native tool calls and chat transport. Muse Spark, the
+former xhigh-reasoning default, is retired upstream (410 ModelDeprecated) and
+is dropped from the roster on refresh. The provider also registers the other
+free models supported by Pi's
 Chat Completions transport. Their capabilities and limits come from Pi's
 built-in OpenCode catalogue rather than guessed defaults.
 
@@ -86,13 +86,14 @@ Background-review direct transport (`pi-ai/compat completeSimple`) bypasses
 the `stream()` wrapper, so this extension patches the global compat registry
 at load: `opencode-zen-free` models get the full dynamic identity there too
 (`Bearer public`, OpenCode `User-Agent` / `x-opencode-client` / `project` /
-per-session `x-opencode-session` / per-request `x-opencode-request`, plus the
+per-session full correlation set (`x-opencode-session` /
+`x-opencode-session-id` / `x-session-affinity` / `x-session-id`), plus the
 encrypted-content retry), while other providers pass through untouched. No
 memory config needed for the default direct transport — and compat omission
 stays `off`, preserving Hermes `llmThinkingOverride: off` (no forced `xhigh`
 on this path).
 
-As a last resort, a fetch guard scoped strictly to `https://opencode.ai/zen/v1`
+As a last resort, a fetch guard scoped strictly to `https://opencode.ai/inference/v1`
 adds the same identity at the network edge for any other in-process path
 (Pi core flows such as compaction, present or future) — other hosts pass
 through untouched, and a valid upstream session / existing Authorization are

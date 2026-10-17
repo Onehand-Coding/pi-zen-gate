@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, normalizeContext, Type, type Api, type Context, type FetchFunction, type Model } from "@earendil-works/pi-ai";
-import { freeModels, zenProvider, PROVIDER_ID, sessionHeader, requestHeader, OPENCODE_USER_AGENT, STATIC_ZEN_HEADERS, isEncryptedContentError, stripStaleReasoning } from "../src/provider.ts";
+import { freeModels, zenProvider, PROVIDER_ID, sessionHeader, requestHeader, OPENCODE_USER_AGENT, STATIC_ZEN_HEADERS, BASE_URL, isUnknownFreeId, isEncryptedContentError, prettyFreeName, syntheticFreeModel, stripStaleReasoning } from "../src/provider.ts";
 import { hostModuleDrift, hostRelease, relinkHostModules, releasePaths } from "../src/host-link.ts";
 
 const muse = (p = zenProvider()) => p.getModels().find(m => m.id === "muse-spark-1.3-contributor-free")!;
@@ -44,17 +44,23 @@ test("free catalogue uses Pi capabilities and excludes paid models", () => {
   assert.equal(muse().thinkingLevelMap?.xhigh, "xhigh");
 });
 
-test("catalogue-gap free models are exposed with Zen identity", () => {
-  const exo = freeModels().find(m => m.id === "exo-free");
-  assert.ok(exo, "exo-free must be offered even though the pi-ai catalogue lacks it");
-  assert.equal(exo.api, "openai-completions");
-  assert.equal(exo.provider, PROVIDER_ID);
-  assert.equal(exo.baseUrl, "https://opencode.ai/zen/v1");
-  assert.deepEqual(exo.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-  assert.deepEqual(exo.input, ["text", "image"]);
-  assert.deepEqual(exo.headers, STATIC_ZEN_HEADERS);
-  // Zen's live catalogue must be able to narrow it away again, not resurrect it.
-  assert.equal(freeModels().filter(m => m.id === "exo-free").length, 1);
+test("unknown free models register as conservative synthetics", () => {
+  assert.equal(isUnknownFreeId("deepseek-v4.1-flash-free"), true);
+  assert.equal(isUnknownFreeId("beam-free"), true);
+  assert.equal(isUnknownFreeId("gpt-6-astra"), false);
+  assert.equal(isUnknownFreeId("jev-1.13-free"), false, "classifier ids are not chat models");
+  assert.equal(isUnknownFreeId(""), false);
+  assert.equal(isUnknownFreeId(undefined), false);
+  assert.equal(prettyFreeName("deepseek-v4.1-flash-free"), "Deepseek v4.1 Flash Free");
+  assert.equal(prettyFreeName("beam-free"), "Beam Free");
+  const m = syntheticFreeModel("deepseek-v4.1-flash-free") as any;
+  assert.equal(m.api, "openai-completions");
+  assert.equal(m.provider, PROVIDER_ID);
+  assert.equal(m.baseUrl, BASE_URL);
+  assert.equal(m.name, "Deepseek v4.1 Flash Free");
+  assert.deepEqual(m.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  assert.deepEqual(m.headers, STATIC_ZEN_HEADERS);
+  assert.equal(m.compat?.maxTokensField, "max_tokens");
 });
 
 test("release layout is read from the running entrypoint", () => {
@@ -125,16 +131,20 @@ test("host symlink drift is reported only on divergence", () => {
   assert.equal(hostModuleDrift({ piEntry: "/usr/local/bin/pi", extensionModuleDir: "/x/releases/1.0.3/node_modules/@earendil-works/pi-ai" }), null);
 });
 
-test("live refresh intersects known free models and preserves catalogue on failure", async () => {
+test("live refresh intersects known free models, appends unknowns, preserves on failure", async () => {
   const p = zenProvider(); const models = createModels(); models.setProvider(p);
   const original = globalThis.fetch;
   try {
     globalThis.fetch = async () => Response.json({ data: [{ id: muse().id }, { id: "gpt-6-astra" }, { id: "unknown-free" }] });
     assert.equal((await models.refresh()).errors.size, 0);
-    assert.deepEqual(p.getModels().map(m => m.id), [muse().id]);
+    assert.deepEqual(p.getModels().map(m => m.id), [muse().id, "unknown-free"]);
+    const synth = p.getModels().find(m => m.id === "unknown-free")!;
+    assert.equal(synth.name, "Unknown Free");
+    // Paid and non-chat ids stay excluded.
+    assert.ok(!p.getModels().some(m => m.id === "gpt-6-astra"));
     globalThis.fetch = async () => { throw new Error("offline"); };
     assert.equal((await models.refresh()).errors.size, 1);
-    assert.deepEqual(p.getModels().map(m => m.id), [muse().id]);
+    assert.deepEqual(p.getModels().map(m => m.id), [muse().id, "unknown-free"]);
   } finally { globalThis.fetch = original; }
 });
 
@@ -149,7 +159,7 @@ test("anonymous Responses requests preserve xhigh, images, and text-before-tool 
   assert.ok(result.content.some(b => b.type === "toolCall" && b.name === "lookup" && b.arguments.key === "weather"));
   assert.ok(result.content.some(b => b.type === "thinking" && b.thinkingSignature?.includes("opaque-signature")));
   const request = c.calls[0];
-  assert.equal(request.url, "https://opencode.ai/zen/v1/responses");
+  assert.equal(request.url, `${BASE_URL}/responses`);
   assert.equal(request.headers.get("authorization"), "Bearer public");
   assert.equal(request.headers.get("x-opencode-session"), sessionHeader("session-a"));
   assert.equal(request.body.reasoning.effort, "xhigh");
@@ -223,7 +233,17 @@ test("responses requests send opencode headers and matching cache key", async ()
   const request = c.calls[0];
   assert.equal(request.headers.get("x-opencode-client"), "cli");
   assert.equal(request.headers.get("x-opencode-project"), "global");
-  assert.match(request.headers.get("x-opencode-request") ?? "", /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+  // Full CLI correlation set; the extension emits no x-opencode-request and
+  // no explicit x-client-request-id (the CLI omits both on /inference/v1).
+  assert.equal(request.headers.get("x-opencode-session"), sessionHeader("session-a"));
+  assert.equal(request.headers.get("x-opencode-session-id"), sessionHeader("session-a"));
+  assert.equal(request.headers.get("x-session-affinity"), sessionHeader("session-a"));
+  assert.equal(request.headers.get("x-session-id"), sessionHeader("session-a"));
+  assert.equal(request.headers.get("x-opencode-request"), null);
+  // pi-ai core may add its own x-client-request-id downstream; when present
+  // it must never disagree with the session.
+  const arid = request.headers.get("x-client-request-id");
+  assert.ok(arid === null || arid === request.headers.get("x-opencode-session"));
   assert.equal(request.headers.get("user-agent"), OPENCODE_USER_AGENT);
   assert.equal(request.body.prompt_cache_key, request.headers.get("x-opencode-session"));
 });
@@ -250,7 +270,7 @@ test("Chat Completions models use their native endpoint anonymously", async () =
   const model = p.getModels().find(m => m.id === "big-pickle")!;
   const result = await p.streamSimple(model, context, { fetch, sessionId: "chat-a" }).result();
   assert.equal(result.stopReason, "stop", result.errorMessage);
-  assert.equal(url, "https://opencode.ai/zen/v1/chat/completions");
+  assert.equal(url, `${BASE_URL}/chat/completions`);
   assert.equal(headers.get("authorization"), "Bearer public");
   assert.equal(headers.get("x-opencode-session"), sessionHeader("chat-a"));
 });
@@ -383,7 +403,10 @@ test("compat side-channel patch injects Zen identity for our models only", async
     assert.equal(seen[0].headers.get("x-opencode-client"), "cli");
     assert.equal(seen[0].headers.get("x-opencode-project"), "global");
     assert.equal(seen[0].headers.get("x-opencode-session"), sesh("compat-session"));
-    assert.match(seen[0].headers.get("x-opencode-request") ?? "", /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    assert.equal(seen[0].headers.get("x-opencode-session-id"), sesh("compat-session"));
+    assert.equal(seen[0].headers.get("x-session-affinity"), sesh("compat-session"));
+    assert.equal(seen[0].headers.get("x-session-id"), sesh("compat-session"));
+    assert.equal(seen[0].headers.get("x-opencode-request"), null);
     assert.equal(seen[0].body.reasoning, undefined);
 
     // Non-Zen model passes through untouched (no Zen headers).
@@ -442,17 +465,20 @@ test("global fetch guard covers raw Zen requests and ignores other hosts", async
     assert.equal(calls[0].headers.get("x-opencode-session"), null);
 
     // Raw Zen request gets the full identity with a valid session.
-    await globalThis.fetch("https://opencode.ai/zen/v1/responses", { method: "POST" });
+    await globalThis.fetch(`${BASE_URL}/responses`, { method: "POST" });
     const zen = calls[1].headers;
     assert.equal(zen.get("authorization"), "Bearer public");
     assert.equal(zen.get("user-agent"), OPENCODE_USER_AGENT);
     assert.equal(zen.get("x-opencode-client"), "cli");
     assert.equal(zen.get("x-opencode-project"), "global");
     assert.equal(zen.get("x-opencode-session"), sesh2("guard-session"));
-    assert.match(zen.get("x-opencode-request") ?? "", /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    assert.equal(zen.get("x-opencode-session-id"), sesh2("guard-session"));
+    assert.equal(zen.get("x-session-affinity"), sesh2("guard-session"));
+    assert.equal(zen.get("x-session-id"), sesh2("guard-session"));
+    assert.equal(zen.get("x-opencode-request"), null);
 
     // Upstream-set identity is preserved (affinity + explicit auth).
-    await globalThis.fetch("https://opencode.ai/zen/v1/chat/completions", {
+    await globalThis.fetch(`${BASE_URL}/chat/completions`, {
       headers: { Authorization: "Bearer real-key", "x-opencode-session": sesh2("upstream-session") },
     });
     const kept = calls[2].headers;
@@ -461,7 +487,7 @@ test("global fetch guard covers raw Zen requests and ignores other hosts", async
 
     // Re-patching refreshes the getter without stacking (one underlying call).
     patchGlobalFetchForZen(() => "guard-session-2");
-    await globalThis.fetch("https://opencode.ai/zen/v1/models");
+    await globalThis.fetch(`${BASE_URL}/models`);
     assert.equal(calls[3].headers.get("x-opencode-session"), sesh2("guard-session-2"));
   } finally {
     globalThis.fetch = realFetch;
@@ -493,9 +519,9 @@ test("node:http guard injects Zen identity for Zen hosts only", async () => {
     const fromHeaders = mod.applyZenHeadersToNodeHeaders(new Headers({ Authorization: "Bearer real" }), () => "s") as Headers;
     assert.equal(fromHeaders.get("authorization"), "Bearer real");
 
-    assert.equal(mod.isZenNodeRequestOptions({ hostname: "opencode.ai", path: "/zen/v1/responses" }), true);
-    assert.equal(mod.isZenNodeRequestOptions({ host: "opencode.ai:443", path: "/zen/v1/models" }), true);
-    assert.equal(mod.isZenNodeRequestOptions({ hostname: "example.com", path: "/zen/v1/responses" }), false);
+    assert.equal(mod.isZenNodeRequestOptions({ hostname: "opencode.ai", path: "/inference/v1/responses" }), true);
+    assert.equal(mod.isZenNodeRequestOptions({ host: "opencode.ai:443", path: "/inference/v1/models" }), true);
+    assert.equal(mod.isZenNodeRequestOptions({ hostname: "example.com", path: "/inference/v1/responses" }), false);
     assert.equal(mod.isZenNodeRequestOptions({ hostname: "opencode.ai", path: "/other" }), false);
 
     // Wrapper delegation with stubbed originals (no network).
@@ -509,7 +535,7 @@ test("node:http guard injects Zen identity for Zen hosts only", async () => {
       "https.request": stubOriginal, "https.get": stubOriginal,
     }));
     mod.patchNodeHttpForZen(() => "node-session");
-    const out = httpMod.request({ hostname: "opencode.ai", path: "/zen/v1/responses", headers: {} }) as any;
+    const out = httpMod.request({ hostname: "opencode.ai", path: "/inference/v1/responses", headers: {} }) as any;
     assert.equal(out.stubbed, true);
     assert.equal(received[0].options.headers["x-opencode-session"], mod.sessionHeader("node-session"));
     assert.equal(received[0].options.headers["Authorization"], "Bearer public");
@@ -527,10 +553,10 @@ test("node:http guard injects Zen identity for Zen hosts only", async () => {
   }
 });
 
-test("x-client-request-id survives cacheRetention none (compaction)", async () => {
+test("session correlation headers survive cacheRetention none (compaction)", async () => {
   // Pi core compaction forces cacheRetention "none", for which pi-ai drops its
-  // own x-client-request-id downstream. The extension sets it explicitly so
-  // the drop cannot remove it.
+  // own session-affinity headers downstream. The extension sets the full CLI
+  // correlation set explicitly so the drop cannot remove it.
   const p = zenProvider(() => "compact-session");
   const c = capture([text]);
   const models = createModels();
@@ -541,27 +567,34 @@ test("x-client-request-id survives cacheRetention none (compaction)", async () =
   } as any);
   assert.equal(out.stopReason, "stop", (out as any).errorMessage);
   const h = c.calls[0].headers;
-  assert.equal(h.get("x-client-request-id"), h.get("x-opencode-session"));
-  assert.match(h.get("x-client-request-id") ?? "", /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+  assert.equal(h.get("x-opencode-session"), h.get("x-opencode-session-id"));
+  assert.equal(h.get("x-opencode-session"), h.get("x-session-affinity"));
+  assert.equal(h.get("x-opencode-session"), h.get("x-session-id"));
+  assert.match(h.get("x-opencode-session") ?? "", /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+  assert.equal(h.get("x-opencode-request"), null);
+  const arid = h.get("x-client-request-id");
+  assert.ok(arid === null || arid === h.get("x-opencode-session"));
 
-  // Fetch and node guards backfill it too.
+  // Fetch and node guards backfill the correlation set too.
   const { patchGlobalFetchForZen } = await import("../src/provider.ts");
   const realFetch = globalThis.fetch;
   try {
     (globalThis as any).__piOpenCodeDirectFetchOriginal = (async (_u: any, init?: any) => {
       const hh = new Headers(init?.headers);
-      assert.ok(hh.get("x-client-request-id"));
+      assert.ok(hh.get("x-opencode-session-id"));
+      assert.ok(hh.get("x-session-affinity"));
       return new Response("{}", { status: 200 });
     }) as typeof fetch;
     patchGlobalFetchForZen(() => "guard-session");
-    await globalThis.fetch("https://opencode.ai/zen/v1/models");
+    await globalThis.fetch(`${BASE_URL}/models`);
   } finally {
     globalThis.fetch = realFetch;
     delete (globalThis as any).__piOpenCodeDirectFetchOriginal;
   }
   const mod = await import("../src/provider.ts");
   const viaNode = mod.applyZenHeadersToNodeHeaders({}, () => "node-session") as Record<string, string>;
-  assert.match(viaNode["x-client-request-id"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+  assert.match(viaNode["x-opencode-session-id"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+  assert.match(viaNode["x-session-affinity"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
 });
 
 test("anonymous compaction uses OpenCode byte-identical prompt", async () => {

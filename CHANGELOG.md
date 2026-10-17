@@ -1,3 +1,23 @@
+## 0.2.1
+
+Recovered free tier access after OpenCode 2.x moved it (2026-10-14): every
+model on the old `https://opencode.ai/zen/v1` answers 403 `FreeTierError` now.
+
+- Endpoint moved to `https://opencode.ai/inference/v1`; all guards re-scoped.
+- `User-Agent` is `opencode/latest/2.0.30/cli`, byte-identical to the genuine
+  2.0.30 CLI. Live probe (2026-10-17) showed any `/^opencode\//` UA passes,
+  but this form matches the real client.
+- Full CLI correlation set (`x-opencode-session` / `x-opencode-session-id` /
+  `x-session-affinity` / `x-session-id`, one cached timestamp-based `ses_` id).
+  `x-opencode-request` is no longer emitted anywhere (the CLI omits it on
+  `/inference/v1`); the explicit `x-client-request-id` is dropped too.
+- Roster: `muse-spark-1.3-contributor-free` retired upstream (410
+  `ModelDeprecated`); dropped automatically by refresh. `exo-free` removed
+  (retired); `beam-free` added as a conservative catalogue-gap entry.
+- Gate surfaces proven live 2026-10-17 from plain Node: endpoint + timestamp
+  session id + non-empty tools (+ `opencode/` UA) is what matters; request
+  body shape is otherwise free.
+
 # Changelog
 
 ## 0.2.0

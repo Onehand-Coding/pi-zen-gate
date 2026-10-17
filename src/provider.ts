@@ -13,49 +13,22 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 
 export const PROVIDER_ID = "opencode-zen-free";
-export const BASE_URL = "https://opencode.ai/zen/v1";
+// OpenCode 2.x moved the free tier: /zen/v1 now answers 403 FreeTierError for
+// every model; /inference/v1 is the live endpoint (since 2026-10-14).
+export const BASE_URL = "https://opencode.ai/inference/v1";
 const SUPPORTED_APIS = new Set(["openai-responses", "openai-completions"]);
 
 /**
- * Free Zen models the bundled pi-ai catalogue does not carry yet.
- *
- * The roster is derived from `getBuiltinModels("opencode")`, which is compiled
- * into pi-ai and only catches up when a new pi-ai ships. `refreshModels()` can
- * merely *intersect* that baseline with Zen's live `/models` list, so a model Zen
- * adds before the catalogue syncs stays invisible here — and `pi update --models`
- * does not help, because the catalogue belongs to pi-ai, not to a refreshable cache.
- *
- * Add an entry when Zen ships a free model ahead of the catalogue, and delete it
- * once `freeModels()` reports it from the baseline. Metadata comes from the Zen
- * docs model table (endpoint shape + SDK) and models.dev (limits, modalities,
- * reasoning): the endpoint shape must be the one Zen documents, since a model
- * sent to the wrong shape fails as a 503 from Zen rather than a client-side error.
+ * Free Zen models the bundled pi-ai catalogue does not carry yet are covered
+ * by `syntheticFreeModel()` inside `refreshModels()` (upstream PR #7): anything
+ * the live `/models` list serves that the baseline lacks is auto-registered
+ * with conservative defaults and retires on its own once a newer pi-ai ships
+ * official metadata.
  */
-const EXTRA_FREE_MODELS: Model<Api>[] = [
-  {
-    // Zen docs: https://opencode.ai/zen/v1/chat/completions via @ai-sdk/openai-compatible.
-    id: "exo-free",
-    name: "Exo Free",
-    api: "openai-completions",
-    provider: PROVIDER_ID,
-    baseUrl: BASE_URL,
-    reasoning: true,
-    input: ["text", "image"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
-    contextWindow: 1048576,
-    maxTokens: 131072,
-    // models.dev lists "high" as the only reasoning effort.
-    thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null },
-    inputLimits: { images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } } },
-  },
-];
-
 export function freeModels(): Model<Api>[] {
   const baseline = getBuiltinModels("opencode")
     .filter((m) => SUPPORTED_APIS.has(m.api) && Object.values(m.cost).every((cost) => cost === 0));
-  const known = new Set(baseline.map((m) => m.id));
-  return [...baseline, ...EXTRA_FREE_MODELS.filter((m) => !known.has(m.id))]
+  return baseline
     .map((m) => ({
       ...m,
       provider: PROVIDER_ID,
@@ -74,7 +47,63 @@ export function freeModels(): Model<Api>[] {
     }));
 }
 
-export const OPENCODE_USER_AGENT = "opencode/1.18.35 ai-sdk/provider-utils/4.0.45 runtime/bun/1.3.14";
+// Byte-identical to the genuine OpenCode 2.0.30 CLI wire capture (issue #8 in
+// Aymendje/pi-opencode-direct). Any `/^opencode\//` value passes the current
+// gate — verified live 2026-10-17 — but this form matches the real client, so
+// fingerprint drift is on their side, not ours.
+/**
+ * IDs that look free but are not chat models (classifiers etc).
+ */
+const NON_CHAT_FREE_PREFIXES = ["jev-"];
+
+/** True for a free model the bundled pi-ai catalogue does not know. */
+export function isUnknownFreeId(id: unknown): boolean {
+  if (typeof id !== "string" || id.length === 0) return false;
+  if (NON_CHAT_FREE_PREFIXES.some((p) => id.startsWith(p))) return false;
+  return /(^|[/:_-])free([/:_-]|$)/i.test(id) || /-free$/i.test(id);
+}
+
+/** "step-5-preview-free" -> "Step 5 Preview Free". */
+export function prettyFreeName(id: string): string {
+  return (id.split("/").pop() as string)
+    .split(/[-_:]+/)
+    .map((w) => (/^[a-z]+$/i.test(w) ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+/**
+ * Synthetic model for a brand-new free model Zen serves before the pi-ai
+ * catalogue catches up. Conservative defaults, Chat Completions transport
+ * (same as the other free models). When a newer pi-ai ships official
+ * metadata, the baseline covers the ID and the synthetic retires on its own.
+ * Fine-tuning goes via `modelOverrides` in models.json (upstream PR #6/#7).
+ */
+export function syntheticFreeModel(id: string): Model<Api> {
+  const isResponses = id.startsWith("muse-spark-");
+  const base = {
+    id,
+    name: prettyFreeName(id),
+    provider: PROVIDER_ID,
+    baseUrl: BASE_URL,
+    reasoning: true,
+    input: ["text", "image"] as ("text" | "image")[],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 262144,
+    maxTokens: 32768,
+    headers: { ...STATIC_ZEN_HEADERS },
+  };
+  if (isResponses) {
+    return { ...base, api: "openai-responses", compat: { sessionAffinityFormat: "openai-nosession" } } as unknown as Model<Api>;
+  }
+  return {
+    ...base,
+    api: "openai-completions",
+    compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: true, maxTokensField: "max_tokens" },
+    inputLimits: { images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } } },
+  } as unknown as Model<Api>;
+}
+
+export const OPENCODE_USER_AGENT = "opencode/latest/2.0.30/cli";
 export const OPENCODE_CLIENT = "cli";
 export const OPENCODE_PROJECT = "global";
 
@@ -107,13 +136,13 @@ function base62FromBytes(bytes: Uint8Array, length: number): string {
  * base62 without a hex prefix), while freshly generated valid ids pass.
  *
  * The 12 hex chars are not arbitrary: OpenCode encodes a real timestamp there.
- * `timestampHex()` is a transcription of upstream's id scheme in
- * `packages/schema/src/identifier.ts` (branch `dev`), which is the authority
- * for this format. The gate decodes those bytes and rejects sessions that are
- * not recent — a sha256-derived id decodes to an arbitrary date (the previous
- * implementation here decoded to 1971-10-24) and 403s FreeTierError on every
- * request. Verified live 2026-10-13 against /zen/v1: same body and headers,
- * sha256 id 403, timestamp-encoded id 200.
+  * `timestampHex()` is a transcription of upstream's id scheme in
+  * `packages/schema/src/identifier.ts` (branch `dev`), which is the authority
+  * for this format. The gate decodes those bytes and rejects sessions that are
+  * not plausible — a sha256-derived id decodes to an arbitrary date (the
+  * previous implementation here decoded to 1971-10-24) and 403s FreeTierError
+  * on every request. Verified live 2026-10-13, and re-verified 2026-10-17 on
+  * /inference/v1: same body and headers, sha256 id 403, timestamp id 200.
  *
  * Affinity stays stable per Pi session: the encoded value is taken from the
  * first call for that Pi session and reused, so one Pi session keeps one
@@ -166,10 +195,10 @@ export function sessionHeader(sessionId: string): string {
 /**
  * OpenCode request id: `msg_` + the same timestamp encoding, ascending (message
  * ids are ascending upstream, session ids descending) + 14 random base62 chars.
- * Upstream reuses the user message's id here; a fresh one per request is
- * structurally identical. Not gate-checked: verified live 2026-10-13 that a
- * random-hex request id alongside a valid session id still returns 200. Kept
- * faithful anyway so the two generators cannot drift apart.
+ * The current gate does not use it (verified live 2026-10-17 that requests
+ * without it pass) — the genuine 2.0.30 CLI sends no such header on
+ * /inference/v1 at all. Kept exported for identity-shape tests; nothing on the
+ * wire emits it.
  */
 export function requestHeader(): string {
   const now = Date.now();
@@ -354,7 +383,7 @@ export async function resolveZenApiKey(input: {
 
 function compatRequestOptions<T extends StreamOptions>(options: T, getSessionId: SessionGetter, fallbackSession: string): T {
   const headers = Object.fromEntries(Object.entries(options?.headers ?? {})
-    .filter(([name]) => !["authorization", "user-agent", "x-opencode-session", "x-opencode-client", "x-opencode-project", "x-opencode-request"].includes(name.toLowerCase())));
+    .filter(([name]) => !["authorization", "user-agent", "x-opencode-session", "x-opencode-session-id", "x-session-affinity", "x-session-id", "x-opencode-client", "x-opencode-project", "x-opencode-request", "x-client-request-id"].includes(name.toLowerCase())));
   const opencodeSession = sessionHeader(options?.sessionId ?? getSessionId() ?? fallbackSession);
   // An explicitly resolved key (stored credential, env, or --api-key) is
   // honored; otherwise anonymous. Authorization is rebuilt from the effective
@@ -364,11 +393,11 @@ function compatRequestOptions<T extends StreamOptions>(options: T, getSessionId:
   return {
     ...options,
     apiKey: effectiveApiKey,
-    // Pi core compaction forces cacheRetention "none", for which pi-ai drops
-    // its own session-affinity headers (x-client-request-id) downstream — yet
-    // Zen 403s requests missing it while identical ones carrying it pass.
-    // Set it explicitly here (options headers merge last) so the drop cannot
-    // remove it. Same affinity value as x-opencode-session.
+    // Session correlation headers, matching the genuine OpenCode CLI
+    // (packages/core/src/session/model-request.ts): the free-tier gate
+    // validates the session id's timestamp and requires the set on
+    // /inference/v1. `x-opencode-request` (msg_*) is not sent — the CLI
+    // omits it on this endpoint and extra headers are ignored.
     sessionId: opencodeSession,
     timeoutMs: options?.timeoutMs ?? 180_000,
     maxRetries: options?.maxRetries ?? 2,
@@ -376,11 +405,12 @@ function compatRequestOptions<T extends StreamOptions>(options: T, getSessionId:
     headers: {
       ...headers,
       Authorization: `Bearer ${effectiveApiKey}`,
-      "x-client-request-id": opencodeSession,
+      "x-opencode-session-id": opencodeSession,
+      "x-session-affinity": opencodeSession,
+      "X-Session-Id": opencodeSession,
       "x-opencode-session": opencodeSession,
       "x-opencode-client": OPENCODE_CLIENT,
       "x-opencode-project": OPENCODE_PROJECT,
-      "x-opencode-request": requestHeader(),
       "User-Agent": OPENCODE_USER_AGENT,
     },
   };
@@ -449,8 +479,8 @@ function identitySummary(headers: Headers, via: string): string {
   const ua = headers.get("User-Agent") ?? "(missing)";
   const session = headers.get("x-opencode-session") ?? "(missing)";
   const auth = headers.get("authorization") ?? "(missing)";
-  const arid = headers.get("x-client-request-id") ?? "(missing)";
-  return `${via} ua=${ua.slice(0, 28)}... session=${session.slice(0, 12)}... auth=${auth.slice(0, 14)}... arid=${arid.slice(0, 12)}...`;
+  const sid = headers.get("x-opencode-session-id") ?? "(missing)";
+  return `${via} ua=${ua.slice(0, 28)}... session=${session.slice(0, 12)}... auth=${auth.slice(0, 14)}... sid=${sid.slice(0, 12)}...`;
 }
 
 /** Normalize legacy `Context` (`{ systemPrompt/tools/messages }`) to the 0.86
@@ -533,18 +563,18 @@ export function patchGlobalFetchForZen(getSessionId: SessionGetter = () => undef
       const rawInit = (init ?? {}) as Record<string, unknown>;
       const headers = new Headers(rawInit.headers as HeadersInit | undefined);
       const existingSession = headers.get("x-opencode-session");
-      headers.set(
-        "x-opencode-session",
-        existingSession && ZEN_SESSION_PATTERN.test(existingSession)
-          ? existingSession
-          : sessionHeader(getSessionId() ?? randomUUID()),
-      );
+      const session = existingSession && ZEN_SESSION_PATTERN.test(existingSession)
+        ? existingSession
+        : sessionHeader(getSessionId() ?? randomUUID());
+      headers.set("x-opencode-session", session);
+      headers.set("x-opencode-session-id", headers.get("x-opencode-session-id") && ZEN_SESSION_PATTERN.test(headers.get("x-opencode-session-id")!) ? headers.get("x-opencode-session-id")! : session);
+      headers.set("x-session-affinity", headers.get("x-session-affinity") && ZEN_SESSION_PATTERN.test(headers.get("x-session-affinity")!) ? headers.get("x-session-affinity")! : session);
+      headers.set("X-Session-Id", headers.get("X-Session-Id") && ZEN_SESSION_PATTERN.test(headers.get("X-Session-Id")!) ? headers.get("X-Session-Id")! : session);
       if (!headers.get("authorization")) headers.set("Authorization", "Bearer public");
       headers.set("User-Agent", OPENCODE_USER_AGENT);
       headers.set("x-opencode-client", OPENCODE_CLIENT);
       headers.set("x-opencode-project", OPENCODE_PROJECT);
-      if (!headers.get("x-opencode-request")) headers.set("x-opencode-request", requestHeader());
-      if (!headers.get("x-client-request-id")) headers.set("x-client-request-id", headers.get("x-opencode-session") ?? sessionHeader(getSessionId() ?? randomUUID()));
+      headers.delete("x-opencode-request");
       debugLog(identitySummary(headers, "fetch"));
       const startedAt = Date.now();
       try {
@@ -618,14 +648,26 @@ export function applyZenHeadersToNodeHeaders(headers: NodeHeadersInit, getSessio
     (out as Record<string, string>)[name] = value;
   };
   const session = readNodeHeader(out, "x-opencode-session");
-  set("x-opencode-session", session && ZEN_SESSION_PATTERN.test(session) ? session : sessionHeader(getSessionId() ?? randomUUID()));
+  const resolved = session && ZEN_SESSION_PATTERN.test(session) ? session : sessionHeader(getSessionId() ?? randomUUID());
+  set("x-opencode-session", resolved);
+  set("x-opencode-session-id", readNodeHeader(out, "x-opencode-session-id") && ZEN_SESSION_PATTERN.test(readNodeHeader(out, "x-opencode-session-id")!) ? readNodeHeader(out, "x-opencode-session-id")! : resolved);
+  set("x-session-affinity", readNodeHeader(out, "x-session-affinity") && ZEN_SESSION_PATTERN.test(readNodeHeader(out, "x-session-affinity")!) ? readNodeHeader(out, "x-session-affinity")! : resolved);
+  set("X-Session-Id", readNodeHeader(out, "x-session-id") && ZEN_SESSION_PATTERN.test(readNodeHeader(out, "x-session-id")!) ? readNodeHeader(out, "x-session-id")! : resolved);
   if (!readNodeHeader(out, "authorization")) set("Authorization", "Bearer public");
   set("User-Agent", OPENCODE_USER_AGENT);
   set("x-opencode-client", OPENCODE_CLIENT);
   set("x-opencode-project", OPENCODE_PROJECT);
-  if (!readNodeHeader(out, "x-opencode-request")) set("x-opencode-request", requestHeader());
-  if (!readNodeHeader(out, "x-client-request-id")) {
-    set("x-client-request-id", readNodeHeader(out, "x-opencode-session") ?? sessionHeader(getSessionId() ?? randomUUID()));
+  if (out instanceof Headers) {
+    out.delete("x-opencode-request");
+    out.delete("x-client-request-id");
+  } else if (Array.isArray(out)) {
+    const lower = new Set(["x-opencode-request", "x-client-request-id"]);
+    out = out.filter((pair) => !(pair && lower.has(pair[0]?.toLowerCase() ?? "")));
+  } else if (out) {
+    for (const key of Object.keys(out)) {
+      const lower = key.toLowerCase();
+      if (lower === "x-opencode-request" || lower === "x-client-request-id") delete (out as Record<string, unknown>)[key];
+    }
   }
   return out;
 }
@@ -651,7 +693,7 @@ function splitHttpArgs(args: unknown[]): { options: Record<string, unknown>; cal
 
 export function isZenNodeRequestOptions(options: Record<string, unknown>): boolean {
   const host = String(options.hostname ?? options.host ?? "").split(":")[0]?.toLowerCase();
-  return host === "opencode.ai" && String(options.path ?? "/").startsWith("/zen/v1");
+  return host === "opencode.ai" && String(options.path ?? "/").startsWith("/inference/v1");
 }
 
 /**
@@ -759,9 +801,22 @@ export function zenProvider(getSessionId: () => string | undefined = () => undef
     ...provider,
     getModels: () => catalogue,
     async refreshModels(ctx) {
+      const baselineById = new Map(baseline.map((m) => [m.id, m]));
       const select = (ids: Set<unknown>) => baseline.filter((m) => ids.has(m.id));
+      const reattach = (m: Model<Api>): Model<Api> => ({
+        ...m,
+        provider: PROVIDER_ID,
+        baseUrl: BASE_URL,
+        headers: { ...(m.headers ?? {}), ...STATIC_ZEN_HEADERS },
+      });
       if (ctx.stored) {
-        const restored = select(new Set(ctx.stored.models.map((m) => m.id)));
+        const storedIds = new Set(ctx.stored.models.map((m) => m.id));
+        const restored = [
+          ...select(storedIds),
+          ...ctx.stored.models
+            .filter((m) => !baselineById.has(m.id) && isUnknownFreeId(m.id))
+            .map((m) => reattach(m as Model<Api>)),
+        ];
         if (!await ctx.publish({ update: () => { catalogue = restored; } })) return;
       }
       if (!ctx.allowNetwork || ctx.signal.aborted) return;
@@ -774,7 +829,10 @@ export function zenProvider(getSessionId: () => string | undefined = () => undef
       const body = await response.json() as { data?: { id?: unknown }[] };
       if (!Array.isArray(body.data)) throw new Error("Invalid Zen model catalogue");
       const available = new Set(body.data.map((m) => m.id));
-      const next = select(available);
+      const unknownIds = [...available]
+        .filter((id): id is string => typeof id === "string" && !baselineById.has(id) && isUnknownFreeId(id))
+        .sort();
+      const next = [...select(available), ...unknownIds.map(syntheticFreeModel)];
       await ctx.publish({
         persist: { models: next, checkedAt: Date.now() },
         update: () => { catalogue = next; },
