@@ -462,3 +462,24 @@ Before touching this file, run through this checklist. If every answer is
 - transient blockers (issue tracker's job)
 
 Git already records all of those.
+
+### 2026-10-17: Ported upstream 0.1.8 recipe; dynamic free-model roster
+
+Upstream pi-opencode-direct 0.1.8 matched the real OpenCode client's traffic
+(captured against a local mock): endpoint path, User-Agent, and header set.
+Ported that recipe into src/provider.ts with attribution in FORK.md.
+
+New capability beyond upstream: refreshModels() now auto-registers unknown
+free models from the Zen catalogue and persists them to models-store.json,
+so newly added OpenCode free models appear in /model without a fork edit.
+Pi calls refreshModels on startup for git-checkout extensions; interactive
+sessions see the fresh roster (one-shot `-p` runs show the cached baseline).
+
+Roster curated for the currently live free models; retired ones removed.
+Verified 2026-10-17: live big-pickle + deepseek-v4.1-flash-free calls succeed,
+24/24 tests pass, tsc clean, models-store.json has opencode-zen-free with 9.
+
+Paid-key prospects: an oc_sk API key (with a payment method on the Zen
+console) unlocks paid models through the same plugin; tested and working.
+Free-tier 403 FreeTierError means OpenCode changed gating again; port the
+new recipe from upstream or re-capture traffic, then re-verify.
