@@ -1,0 +1,529 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+STACK_DIR="${PI_ZEN_PROXY_STACK:-$SCRIPT_DIR/../../opencode-unlimited-proxy/stack}"
+
+PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+PI_AGENT_DIR="${PI_AGENT_DIR/#\~/$HOME}"
+PI_MODELS_JSON="$PI_AGENT_DIR/models.json"
+PI_STATE_FILE="$PI_AGENT_DIR/.pi-zen-proxy.state.json"
+PI_PROVIDER_ID="opencode-zen-free"
+
+OPENCODE_CONFIG_PATH="${OPENCODE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json}"
+OPENCODE_CONFIG_PATH="${OPENCODE_CONFIG_PATH/#\~/$HOME}"
+OPENCODE_DIR="$(dirname "$OPENCODE_CONFIG_PATH")"
+OPENCODE_STATE_FILE="$OPENCODE_DIR/.pi-zen-proxy.state.json"
+OPENCODE_GENERATED="$OPENCODE_DIR/opencode.proxy.json"
+OPENCODE_PROVIDER_ID="opencode-unlimited-proxy"
+
+DEFAULT_KEY="local-test-key"
+WAIT_SECONDS="${PI_ZEN_PROXY_WAIT_SECONDS:-120}"
+MODELS_BODY=""
+
+usage() {
+  cat <<'EOF'
+Usage: pi-zen-proxy <on|off|status> [--agent pi|opencode|both]
+
+  on      Start the gateway, wait for it, then enable proxying.
+          Default agent: pi (OpenCode stays direct as a fallback).
+  off     Disable proxying, then stop the gateway when no agent is left
+          proxied. Default agent: both.
+  status  Show proxy mode for the selected agents, container state, and
+          gateway health. Default agent: both.
+
+Agents:
+  pi         Override ~/.pi/agent/models.json for the opencode-zen-free provider.
+  opencode   Generate an OpenCode proxy config, swap it into the global config,
+             and restore the original on off. Adds the provider
+             opencode-unlimited-proxy; select opencode-unlimited-proxy/<model>.
+  both       Both agents.
+
+Environment:
+  PI_ZEN_PROXY_STACK        Path to the gateway's stack directory.
+  PI_ZEN_PROXY_URL          Override the OpenAI-compatible base URL.
+  PI_ZEN_PROXY_KEY          Override the gateway server key.
+  PI_ZEN_PROXY_WAIT_SECONDS Startup wait budget (default 120).
+  PI_CODING_AGENT_DIR       Pi agent directory (default ~/.pi/agent).
+  OPENCODE_CONFIG           OpenCode config file
+                            (default ~/.config/opencode/opencode.json).
+EOF
+}
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+compose() {
+  docker compose -f "$STACK_DIR/docker-compose.yml" "$@"
+}
+
+read_config() {
+  if [[ -f "$STACK_DIR/config.json" ]]; then
+    mapfile -t cfg < <(node - "$STACK_DIR/config.json" <<'NODE'
+const fs = require("node:fs");
+const c = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const listen = String(c.listen || "127.0.0.1:8080");
+const split = listen.lastIndexOf(":");
+const host = split === -1 ? "127.0.0.1" : listen.slice(0, split);
+const port = split === -1 ? listen : listen.slice(split + 1);
+const key = Array.isArray(c.server_keys) && c.server_keys[0] || "local-test-key";
+console.log((host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host) + ":" + port);
+console.log(key);
+NODE
+    )
+    LISTEN="${cfg[0]:-127.0.0.1:8080}"
+    CONFIG_KEY="${cfg[1]:-$DEFAULT_KEY}"
+  else
+    LISTEN="127.0.0.1:8080"
+    CONFIG_KEY="$DEFAULT_KEY"
+  fi
+  BASE_URL="${PI_ZEN_PROXY_URL:-http://$LISTEN/v1}"
+  KEY="${PI_ZEN_PROXY_KEY:-$CONFIG_KEY}"
+}
+
+check_pi_models_json() {
+  [[ -f "$PI_MODELS_JSON" ]] || return 0
+  node - "$PI_MODELS_JSON" <<'NODE' || die "models.json is not plain JSON; this script does not edit commented JSON. Fix it or toggle the entry by hand."
+const fs = require("node:fs");
+JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+NODE
+}
+
+set_pi_proxy() {
+  mkdir -p "$PI_AGENT_DIR"
+  node - "$PI_MODELS_JSON" "$PI_STATE_FILE" "$PI_PROVIDER_ID" "$BASE_URL" "$KEY" <<'NODE'
+const fs = require("node:fs");
+const [modelsPath, statePath, providerId, baseUrl, apiKey] = process.argv.slice(2);
+let doc = { $schema: "https://pi.dev/schemas/models.schema.json", providers: {} };
+if (fs.existsSync(modelsPath)) {
+  doc = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
+}
+doc.providers ??= {};
+const existing = doc.providers[providerId];
+if (existing && existing.baseUrl !== baseUrl && !fs.existsSync(statePath)) {
+  fs.writeFileSync(statePath, JSON.stringify({ entry: existing }, null, 2) + "\n");
+}
+doc.providers[providerId] = { ...(existing || {}), baseUrl, apiKey };
+fs.writeFileSync(modelsPath, JSON.stringify(doc, null, 2) + "\n");
+NODE
+}
+
+clear_pi_proxy() {
+  [[ -f "$PI_MODELS_JSON" ]] || return 0
+  node - "$PI_MODELS_JSON" "$PI_STATE_FILE" "$PI_PROVIDER_ID" <<'NODE'
+const fs = require("node:fs");
+const [modelsPath, statePath, providerId] = process.argv.slice(2);
+const doc = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
+if (doc.providers) {
+  const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : undefined;
+  if (state && state.entry !== undefined) doc.providers[providerId] = state.entry;
+  else delete doc.providers[providerId];
+  if (Object.keys(doc.providers).length === 0) delete doc.providers;
+}
+fs.writeFileSync(modelsPath, JSON.stringify(doc, null, 2) + "\n");
+if (fs.existsSync(statePath)) fs.unlinkSync(statePath);
+NODE
+}
+
+pi_enabled() {
+  [[ -f "$PI_MODELS_JSON" ]] || return 1
+  node - "$PI_MODELS_JSON" "$PI_PROVIDER_ID" "$BASE_URL" <<'NODE'
+const fs = require("node:fs");
+const [modelsPath, providerId, proxyUrl] = process.argv.slice(2);
+try {
+  const doc = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
+  const entry = doc.providers?.[providerId];
+  process.exit(entry && entry.baseUrl === proxyUrl ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
+wait_for_gateway() {
+  local deadline=$((SECONDS + WAIT_SECONDS))
+  while (( SECONDS < deadline )); do
+    if MODELS_BODY=$(curl -fsS --max-time 5 -H "Authorization: Bearer $KEY" "$BASE_URL/models" 2>/dev/null); then
+      return 0
+    fi
+    sleep 2
+  done
+  die "Gateway did not answer at $BASE_URL within ${WAIT_SECONDS}s. Check: docker compose -f \"$STACK_DIR/docker-compose.yml\" ps"
+}
+
+set_opencode_proxy() {
+  mkdir -p "$OPENCODE_DIR"
+
+  # If a previous toggle is still active, restore it first so the original
+  # config, not the generated proxy copy, is captured as the baseline.
+  if [[ -f "$OPENCODE_STATE_FILE" ]]; then
+    clear_opencode_proxy >/dev/null
+  fi
+
+  local kind="missing" target="" backup="" source="-"
+  if [[ -L "$OPENCODE_CONFIG_PATH" ]]; then
+    kind="symlink"
+    target="$(readlink "$OPENCODE_CONFIG_PATH")"
+    source="$(readlink -f "$OPENCODE_CONFIG_PATH" 2>/dev/null || true)"
+    [[ -n "$source" && -f "$source" ]] || source="-"
+  elif [[ -e "$OPENCODE_CONFIG_PATH" ]]; then
+    kind="file"
+    backup="$OPENCODE_CONFIG_PATH.pi-zen-proxy.bak"
+    [[ -e "$backup" ]] && die "Backup already exists: $backup. Restore or remove it first."
+    cp -p "$OPENCODE_CONFIG_PATH" "$backup"
+    source="$OPENCODE_CONFIG_PATH"
+  fi
+
+  local models_tmp tmp
+  models_tmp="$(mktemp "$OPENCODE_DIR/.pi-zen-proxy-models.XXXXXX")"
+  printf '%s' "$MODELS_BODY" > "$models_tmp"
+  tmp="$OPENCODE_GENERATED.tmp.$$"
+
+  if ! node - "$source" "$tmp" "$BASE_URL" "$KEY" "$OPENCODE_PROVIDER_ID" "$models_tmp" <<'NODE'
+const fs = require("node:fs");
+const [sourcePath, outPath, baseUrl, apiKey, providerId, modelsPath] = process.argv.slice(2);
+
+function stripJsonc(text) {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const n = text[i + 1];
+    if (inString) {
+      out += c;
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') {
+      inString = true;
+      out += c;
+    } else if (c === "/" && n === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      out += "\n";
+    } else if (c === "/" && n === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+      i += 1;
+    } else {
+      out += c;
+    }
+  }
+
+  let result = "";
+  inString = false;
+  escaped = false;
+  for (let i = 0; i < out.length; i++) {
+    const c = out[i];
+    if (inString) {
+      result += c;
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      result += c;
+      continue;
+    }
+    if (c === ",") {
+      let j = i + 1;
+      while (j < out.length && /\s/.test(out[j])) j++;
+      if (out[j] === "}" || out[j] === "]") continue;
+    }
+    result += c;
+  }
+  return result;
+}
+
+let doc = { $schema: "https://opencode.ai/config.json" };
+if (sourcePath !== "-" && fs.existsSync(sourcePath)) {
+  doc = JSON.parse(stripJsonc(fs.readFileSync(sourcePath, "utf8")));
+}
+
+const listing = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
+const models = {};
+for (const model of Array.isArray(listing.data) ? listing.data : []) {
+  if (!model || typeof model.id !== "string") continue;
+  const entry = { name: model.id };
+  const context = model.context_window ?? model.context_length ?? model.metadata?.context_window;
+  const output = model.max_output ?? model.metadata?.max_output;
+  if (typeof context === "number" && typeof output === "number") {
+    entry.limit = { context, output };
+  }
+  if (typeof model.reasoning === "boolean") entry.reasoning = model.reasoning;
+  if (typeof model.tool_call === "boolean") entry.tool_call = model.tool_call;
+  const modalities = model.metadata?.input_modalities ?? model.input_modalities;
+  if (Array.isArray(modalities)) entry.attachment = modalities.includes("image");
+  entry.cost = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+  models[model.id] = entry;
+}
+
+doc.provider ??= {};
+doc.provider[providerId] = {
+  npm: "@ai-sdk/openai-compatible",
+  name: "OpenCode Zen (proxy)",
+  options: { baseURL: baseUrl, apiKey },
+  models,
+};
+fs.writeFileSync(outPath, JSON.stringify(doc, null, 2) + "\n");
+NODE
+  then
+    rm -f "$models_tmp" "$tmp"
+    [[ -n "$backup" ]] && rm -f "$backup"
+    die "Could not generate the OpenCode proxy config."
+  fi
+  rm -f "$models_tmp"
+
+  if ! node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$tmp"; then
+    rm -f "$tmp"
+    [[ -n "$backup" ]] && rm -f "$backup"
+    die "Generated OpenCode config is invalid JSON."
+  fi
+
+  mv "$tmp" "$OPENCODE_GENERATED"
+
+  node - "$OPENCODE_STATE_FILE" "$kind" "$target" "$backup" "$OPENCODE_GENERATED" "$BASE_URL" <<'NODE'
+const fs = require("node:fs");
+const [statePath, kind, target, backup, generated, baseUrl] = process.argv.slice(2);
+fs.writeFileSync(statePath, JSON.stringify({ kind, target, backup, generated, baseUrl }, null, 2) + "\n");
+NODE
+
+  case "$kind" in
+    symlink)
+      ln -sfn "$OPENCODE_GENERATED" "$OPENCODE_CONFIG_PATH" ||
+        die "Could not point $OPENCODE_CONFIG_PATH at the proxy config. Run: pi-zen-proxy off --agent opencode"
+      ;;
+    file)
+      cp "$OPENCODE_GENERATED" "$OPENCODE_CONFIG_PATH" ||
+        die "Could not replace $OPENCODE_CONFIG_PATH. Backup: $backup"
+      ;;
+    missing)
+      ln -s "$OPENCODE_GENERATED" "$OPENCODE_CONFIG_PATH" ||
+        die "Could not create $OPENCODE_CONFIG_PATH. Run: pi-zen-proxy off --agent opencode"
+      ;;
+  esac
+}
+
+clear_opencode_proxy() {
+  [[ -f "$OPENCODE_STATE_FILE" ]] || return 0
+
+  local -a oc_state
+  mapfile -t oc_state < <(node - "$OPENCODE_STATE_FILE" <<'NODE'
+const fs = require("node:fs");
+const s = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(s.kind || "");
+console.log(s.target || "");
+console.log(s.backup || "");
+console.log(s.generated || "");
+NODE
+  )
+  local kind="${oc_state[0]:-}"
+  local target="${oc_state[1]:-}"
+  local backup="${oc_state[2]:-}"
+  local generated="${oc_state[3]:-}"
+
+  case "$kind" in
+    symlink)
+      [[ -n "$target" ]] || {
+        printf 'warning: OpenCode state has no original target; leaving %s in place.\n' "$OPENCODE_CONFIG_PATH" >&2
+        return 1
+      }
+      ln -sfn "$target" "$OPENCODE_CONFIG_PATH"
+      ;;
+    file)
+      if [[ -n "$backup" && -f "$backup" ]]; then
+        cp -p "$backup" "$OPENCODE_CONFIG_PATH"
+        rm -f "$backup"
+      else
+        printf 'warning: OpenCode backup is missing; leaving the proxy config in place.\n' >&2
+        return 1
+      fi
+      ;;
+    missing)
+      if [[ -L "$OPENCODE_CONFIG_PATH" ]] && [[ "$(readlink -f "$OPENCODE_CONFIG_PATH" 2>/dev/null || true)" == "$generated" ]]; then
+        rm -f "$OPENCODE_CONFIG_PATH"
+      else
+        printf 'warning: %s is no longer the generated proxy config; leaving it in place.\n' "$OPENCODE_CONFIG_PATH" >&2
+        return 1
+      fi
+      ;;
+    *)
+      printf 'warning: unrecognised OpenCode state kind: %s\n' "$kind" >&2
+      return 1
+      ;;
+  esac
+
+  rm -f "$OPENCODE_GENERATED" "$OPENCODE_STATE_FILE"
+}
+
+opencode_enabled() {
+  [[ -f "$OPENCODE_STATE_FILE" ]] || return 1
+  node - "$OPENCODE_STATE_FILE" "$OPENCODE_CONFIG_PATH" "$OPENCODE_GENERATED" <<'NODE'
+const fs = require("node:fs");
+const [statePath, configPath, generated] = process.argv.slice(2);
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+if (state.kind === "file") {
+  process.exit(fs.existsSync(configPath) && fs.existsSync(generated) ? 0 : 1);
+}
+try {
+  process.exit(fs.realpathSync(configPath) === fs.realpathSync(generated) ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
+print_pi_mode() {
+  if [[ ! -f "$PI_MODELS_JSON" ]]; then
+    echo "pi: direct (no models.json)"
+    return
+  fi
+  node - "$PI_MODELS_JSON" "$PI_PROVIDER_ID" "$BASE_URL" <<'NODE'
+const fs = require("node:fs");
+const [modelsPath, providerId, proxyUrl] = process.argv.slice(2);
+try {
+  const doc = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
+  const entry = doc.providers?.[providerId];
+  if (!entry) console.log("pi: direct (no override)");
+  else if (entry.baseUrl === proxyUrl) console.log(`pi: proxy (${entry.baseUrl})`);
+  else console.log(`pi: custom (${entry.baseUrl || "no baseUrl"})`);
+} catch (error) {
+  console.log(`pi: unreadable (${error.message})`);
+}
+NODE
+}
+
+print_opencode_mode() {
+  node - "$OPENCODE_CONFIG_PATH" "$OPENCODE_STATE_FILE" "$OPENCODE_GENERATED" <<'NODE'
+const fs = require("node:fs");
+const [configPath, statePath, generated] = process.argv.slice(2);
+if (!fs.existsSync(statePath)) {
+  console.log("opencode: direct");
+  process.exit(0);
+}
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+let proxied = false;
+if (state.kind === "file") {
+  proxied = fs.existsSync(configPath) && fs.existsSync(generated);
+} else {
+  try {
+    proxied = fs.realpathSync(configPath) === fs.realpathSync(generated);
+  } catch {}
+}
+if (proxied) console.log(`opencode: proxy (${state.baseUrl || "generated config"})`);
+else console.log("opencode: state present but config is not proxied");
+NODE
+}
+
+print_gateway() {
+  if body=$(curl -fsS --max-time 5 -H "Authorization: Bearer $KEY" "$BASE_URL/models" 2>/dev/null); then
+    count=$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).data.length)}catch{console.log("?")}})' <<<"$body")
+    echo "gateway: ok at $BASE_URL ($count models)"
+  else
+    echo "gateway: unreachable at $BASE_URL"
+  fi
+}
+
+read_config
+
+COMMAND=""
+AGENT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --agent)
+      [[ $# -ge 2 ]] || die "--agent requires a value: pi, opencode, or both"
+      AGENT="$2"
+      shift 2
+      ;;
+    --agent=*)
+      AGENT="${1#*=}"
+      shift
+      ;;
+    on|off|status)
+      [[ -z "$COMMAND" ]] || die "Specify only one command."
+      COMMAND="$1"
+      shift
+      ;;
+    -h|--help|help)
+      COMMAND="help"
+      shift
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$AGENT" in
+  "") ;;
+  pi|opencode|both) ;;
+  *) die "Unknown agent: $AGENT (expected pi, opencode, or both)" ;;
+esac
+
+case "$COMMAND" in
+  on)
+    AGENT="${AGENT:-pi}"
+    [[ -d "$STACK_DIR" ]] || die "Stack directory not found: $STACK_DIR (set PI_ZEN_PROXY_STACK)"
+    if [[ "$AGENT" == "pi" || "$AGENT" == "both" ]]; then
+      check_pi_models_json
+    fi
+    compose up -d
+    wait_for_gateway
+    if [[ "$AGENT" == "pi" || "$AGENT" == "both" ]]; then
+      set_pi_proxy
+      echo "Pi -> $BASE_URL. Reload Pi or /reload."
+    fi
+    if [[ "$AGENT" == "opencode" || "$AGENT" == "both" ]]; then
+      set_opencode_proxy
+      echo "OpenCode -> $BASE_URL (provider $OPENCODE_PROVIDER_ID). Restart OpenCode, then select $OPENCODE_PROVIDER_ID/<model>."
+    fi
+    ;;
+  off)
+    AGENT="${AGENT:-both}"
+    if [[ "$AGENT" == "pi" || "$AGENT" == "both" ]]; then
+      clear_pi_proxy
+      echo "Pi -> direct Zen."
+    fi
+    if [[ "$AGENT" == "opencode" || "$AGENT" == "both" ]]; then
+      clear_opencode_proxy || die "Could not restore the OpenCode config; see the warning above."
+      echo "OpenCode -> direct config."
+    fi
+    if [[ ! -f "$PI_STATE_FILE" && ! -f "$OPENCODE_STATE_FILE" ]] && ! pi_enabled && ! opencode_enabled; then
+      if [[ -d "$STACK_DIR" ]]; then
+        compose stop
+        echo "Gateway stopped."
+      else
+        echo "warning: stack directory not found; gateway not stopped." >&2
+      fi
+    else
+      echo "Gateway left running for the remaining proxied agent."
+    fi
+    ;;
+  status)
+    AGENT="${AGENT:-both}"
+    if [[ "$AGENT" == "pi" || "$AGENT" == "both" ]]; then
+      print_pi_mode
+    fi
+    if [[ "$AGENT" == "opencode" || "$AGENT" == "both" ]]; then
+      print_opencode_mode
+    fi
+    if [[ -d "$STACK_DIR" ]]; then
+      compose ps || true
+    else
+      echo "stack: not found at $STACK_DIR"
+    fi
+    print_gateway
+    ;;
+  -h|--help|help|"")
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

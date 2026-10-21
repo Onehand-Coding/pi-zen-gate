@@ -80,6 +80,107 @@ Requests use Pi's native retry handling (two retries by default) and a
 Muse Spark currently accepts only `tool_choice: auto`; normal Pi tool use does
 not require forced tool choice.
 
+## Route through opencode-unlimited-proxy (optional)
+
+[`opencode-unlimited-proxy`](https://github.com/ebouther/opencode-unlimited-proxy)
+is a separate self-hosted gateway (Linux and Docker required) that serves the
+same free models through an OpenAI-compatible API and rotates egress addresses.
+Pi can use it without any change to this extension: override the provider's
+base URL in `<agent-dir>/models.json` (`~/.pi/agent/models.json` by default).
+OpenCode can use the same gateway through the toggle script below; that path is
+opt-in so its direct `opencode/` models remain an independent fallback.
+
+```json
+{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "opencode-zen-free": {
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "apiKey": "local-test-key"
+    }
+  }
+}
+```
+
+The key must match `server_keys` in the gateway's `stack/config.json`
+(`local-test-key` is the shipped default). Reload Pi or restart it, then use
+the same model IDs as before:
+
+```sh
+pi --provider opencode-zen-free --model big-pickle
+```
+
+Inference now goes to the gateway, which rebuilds the OpenCode fingerprint and
+forwards through its proxy pool. The extension's own gate headers still travel
+with the request; the gateway does not depend on them. Roster refresh still
+reads Zen's public catalogue directly (`/inference/v1/models`, metadata only),
+so only inference is routed through the gateway. `models-store.json` needs no
+edit: the override is applied above the cached roster, and the cached
+`baseUrl` values may keep pointing at Zen even while requests go to the
+gateway.
+
+Caveats:
+
+- The gateway must be running. If it is down, requests fail; there is no
+  fallback to the direct Zen endpoint.
+- A stored credential from `/login opencode-zen-free` takes priority over the
+  `models.json` `apiKey`. Run `/logout opencode-zen-free` if one exists.
+- The override covers the whole provider, so direct and proxied access cannot
+  run side by side under the same provider ID.
+- Quota remains finite per egress address. The gateway widens it; it does not
+  remove it. Keep the listener on loopback, change its default server key, and
+  review its README and OpenCode's terms before relying on it.
+
+### Toggle script
+
+`scripts/pi-zen-proxy` wraps both sides of the switch. Run it from a checkout,
+or put it on `PATH` once:
+
+```sh
+ln -s "$PWD/scripts/pi-zen-proxy" ~/.local/bin/pi-zen-proxy
+```
+
+```sh
+pi-zen-proxy on                     # Pi only; OpenCode stays direct
+pi-zen-proxy on --agent opencode    # OpenCode only
+pi-zen-proxy on --agent both        # both
+pi-zen-proxy off                    # restore both, then stop the containers
+pi-zen-proxy status                 # mode for both, container state, gateway health
+```
+
+`on` defaults to `pi` so OpenCode keeps its independent direct free tier as a
+fallback when Pi's quota is exhausted. `off` defaults to `both` and is
+idempotent. `--agent pi` or `--agent opencode` narrows either command. The
+gateway is stopped only when no agent is left proxied, so `off --agent pi`
+leaves it running for an active OpenCode override.
+
+For Pi, the script reads the listen address and first `server_keys` entry from
+`stack/config.json` and edits only the `opencode-zen-free` entry, so other
+`models.json` providers survive. Override the defaults with
+`PI_ZEN_PROXY_STACK`, `PI_ZEN_PROXY_URL`, `PI_ZEN_PROXY_KEY`,
+`PI_ZEN_PROXY_WAIT_SECONDS`, or `PI_CODING_AGENT_DIR`. Reload Pi after `on` or
+`off`.
+
+For OpenCode, the script generates a proxy copy of the global config, adds the
+`opencode-unlimited-proxy` provider with the gateway's live model list, and
+swaps the global config symlink to it. `off` restores the original link (or a
+regular file from its `.pi-zen-proxy.bak` copy) and removes the generated
+config. Restart OpenCode after `on` or `off`, then select
+`opencode-unlimited-proxy/<model>`. The existing `opencode/<model>` entries
+remain available unless you switch models. The generated file contains the
+gateway's server key; it stays in the OpenCode config directory, not in this
+repo.
+
+The OpenCode config is read as JSONC, so comments survive in the source but
+not in the generated proxy copy. Edit the ai-workbench source
+(`configs/opencode.json`) rather than the live symlink while the proxy is on;
+the live path points at the generated file. `OPENCODE_CONFIG` overrides the
+global config path (default `~/.config/opencode/opencode.json`).
+
+Remove the `opencode-zen-free` entry (or the whole file) and reload to return
+Pi to direct Zen access. `pi-zen-proxy off` does the same and also restores
+OpenCode.
+
 ## Memory extensions (pi-hermes-memory)
 
 Background-review direct transport (`pi-ai/compat completeSimple`) bypasses

@@ -201,6 +201,20 @@ attribution and visibility do not require a registry.
 `session_start` the stale copy is already in memory, so the fix would only apply
 to the next process.
 
+### OpenCode proxying is opt-in and reversible
+**Choice:** `scripts/pi-zen-proxy` defaults `on` to Pi only. `--agent opencode`
+or `--agent both` generates `~/.config/opencode/opencode.proxy.json`, adds the
+`opencode-unlimited-proxy` provider with the gateway's live model list, and swaps
+the global config symlink; `off` restores the original link or `.bak` file.
+**Status:** Current (2026-10-21)
+**Reason:** OpenCode's direct `opencode/*` free tier is an independent fallback
+when Pi's gateway quota is exhausted. Enabling both by default would collapse
+that separation. The swap is reversible and leaves the ai-workbench JSONC source
+untouched, at the cost of comments not surviving in the generated copy.
+**Alternatives Considered:** Editing the shared JSONC config in place (comment
+loss and cross-repo coupling); a wrapper that exports `OPENCODE_CONFIG` (per-shell,
+not a global toggle).
+
 ---
 
 ## 9. Domain Knowledge
@@ -274,6 +288,28 @@ the paid catalogue.
 - `~/.pi/agent/models-store.json` shadows the live roster, so adding a model
   appears to do nothing until that provider's key is deleted. Procedure in FORK.md.
 
+### models.json composition reads getAllModels
+- Pi's `composeModelProvider` builds the override layer from `getAllModels()`,
+  not `getModels()`. `createProvider` closes that getter over the baseline
+  catalogue, so a provider overriding only `getModels()` pins every
+  `models.json` user to the bundled baseline: refreshed models never appear and
+  retired ones keep showing.
+- Fixed here by overriding `getAllModels` alongside `getModels` in
+  `zenProvider()`. Any future refactor must keep both pointing at `catalogue`.
+- Symptom: `pi --list-models opencode-zen-free` shows the pi-ai baseline only
+  when `~/.pi/agent/models.json` has an `opencode-zen-free` entry; without the
+  entry the refreshed roster shows.
+
+### OpenCode config swap hides the ai-workbench source while proxied
+- `~/.config/opencode/opencode.json` is a symlink to
+  `ai-workbench/configs/opencode.json` (JSONC, comments). While OpenCode proxying
+  is on, the symlink points at the generated `opencode.proxy.json`; editing the
+  live path edits the generated copy, which `off` deletes.
+- Edit the ai-workbench source directly, or run `pi-zen-proxy off --agent
+  opencode` first. The generated file is strict JSON; comments in the source are
+  intentionally not preserved. A regular-file config is backed up to
+  `<path>.pi-zen-proxy.bak` and restored on `off`.
+
 ### Upstream has no git tags
 - The 0.1.7 base is pinned locally as `v0.1.7-pinned`. `git fetch upstream --tags`
   yields nothing useful; compare against `upstream/main` directly.
@@ -308,6 +344,11 @@ the paid catalogue.
   it gets fixed.
 - Pi is installed via its managed layout, not global npm. `npm root -g` does not
   locate Pi. Details in FORK.md.
+- `scripts/pi-zen-proxy` handles both agents. The Pi path edits `models.json`;
+  the OpenCode path generates a proxy copy and swaps the global config symlink.
+  Verified live 2026-10-21: `opencode run --model
+  opencode-unlimited-proxy/big-pickle` returned `pong`, and `off` restored the
+  ai-workbench symlink with the source byte-for-byte unchanged.
 
 ---
 
@@ -321,6 +362,7 @@ the paid catalogue.
 | `src/host-link.ts` | Repoints host symlinks at the running Pi release, at import time |
 | `test/provider.test.ts` | Unit and wire-identity contract tests |
 | `test/live.ts` | Opt-in live probe against the real free tier, never in CI |
+| `scripts/pi-zen-proxy` | Start/stop the optional gateway and toggle the Pi and/or OpenCode override |
 | `FORK.md` | Host symlinks, managed install, roster refresh, verification |
 | `.github/workflows/ci.yml` | `npm run verify` on Node 22 / 24 / 26 |
 
@@ -424,6 +466,11 @@ store for the paid catalogue and is never read from this repo.
   until both pi-ai ships a catalogue including it and the entry is removed.
 - `x-opencode-project` is sent as the literal `global`. Unverified whether the
   gate reads it; recorded as untested rather than correct.
+- A `models.json` provider override can route inference through an
+  OpenAI-compatible gateway (verified with `opencode-unlimited-proxy`), but only
+  inference: `refreshModels()` still fetches Zen's `/models` directly, and
+  `models-store.json` keeps the direct `baseUrl` because the override is applied
+  above the cached roster.
 
 ---
 
