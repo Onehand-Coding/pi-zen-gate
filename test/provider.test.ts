@@ -138,6 +138,9 @@ test("live refresh intersects known free models, appends unknowns, preserves on 
     globalThis.fetch = async () => Response.json({ data: [{ id: muse().id }, { id: "gpt-6-astra" }, { id: "unknown-free" }] });
     assert.equal((await models.refresh()).errors.size, 0);
     assert.deepEqual(p.getModels().map(m => m.id), [muse().id, "unknown-free"]);
+    // models.json composition reads getAllModels, not getModels. Both must
+    // reflect the refreshed catalogue or overrides show the bundled baseline.
+    assert.deepEqual(p.getAllModels?.().map(m => m.id), [muse().id, "unknown-free"]);
     const synth = p.getModels().find(m => m.id === "unknown-free")!;
     assert.equal(synth.name, "Unknown Free");
     // Paid and non-chat ids stay excluded.

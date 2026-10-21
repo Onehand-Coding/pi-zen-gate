@@ -800,6 +800,10 @@ export function zenProvider(getSessionId: () => string | undefined = () => undef
   return {
     ...provider,
     getModels: () => catalogue,
+    // Pi's models.json composition reads getAllModels, which createProvider
+    // closes over the original baseline. Without this override, any models.json
+    // entry pins the roster to that baseline and hides refreshModels() results.
+    getAllModels: () => catalogue,
     async refreshModels(ctx) {
       const baselineById = new Map(baseline.map((m) => [m.id, m]));
       const select = (ids: Set<unknown>) => baseline.filter((m) => ids.has(m.id));
